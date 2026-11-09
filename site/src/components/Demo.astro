@@ -1,0 +1,704 @@
+---
+// A live replica of the Runecast panel that types real queries and shows what each one finds.
+// Rows, labels, icons and both themes' colors are copied from the app's own `--snap` renders; the
+// panel follows the page's theme.
+import { Image, getImage } from "astro:assets";
+import icon from "../../../assets/icon.png";
+import claude from "../../../assets/claude.png";
+import chatgpt from "../../../assets/chatgpt.png";
+
+const claudeIcon = await getImage({ src: claude, width: 64 });
+const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
+---
+
+<section class="demo" aria-label="Runecast demo" data-claude={claudeIcon.src} data-chatgpt={chatgptIcon.src}>
+  <div class="stage">
+    <div class="panel" aria-hidden="true">
+      <div class="search">
+        <svg class="glass" viewBox="0 0 16 16"><circle cx="9.5" cy="6.5" r="4" /><path d="M6.6 9.4 3 13" /></svg>
+        <span class="chip" hidden></span><span class="query"></span><span class="caret"></span><span class="placeholder">Search for apps and commands…</span>
+      </div>
+      <ul class="rows"></ul>
+      <div class="bar">
+        <Image src={icon} alt="" width={14} height={14} densities={[1, 2]} />
+        <span class="brand">Runecast</span>
+        <span class="action"></span><kbd class="enter">↩</kbd>
+        <span class="sep"></span>
+        <span class="close"></span><kbd>esc</kbd>
+      </div>
+    </div>
+  </div>
+  <p class="caption" aria-live="polite"></p>
+  <div class="progress"></div>
+</section>
+
+<script>
+  type Row = {
+    icon: string; // a kind's symbol (see `symbols`), or "img:<url>" for an app icon
+    title: string;
+    subtitle?: string;
+    keys?: string;
+    kind?: string;
+    left?: number; // percent of a limit left, drawn as a meter instead of the kind
+  };
+  // A view that ↩ opens, like AI Usage: a chip in the search field and rows under headings.
+  type View = { chip: string; placeholder: string; action: string; sections: [string, Row[]][] };
+  type Scene = { caption: string; query: string; showAt?: number; action: string; rows: Row[]; opens?: View };
+
+  // The app's symbol for each kind of row (src/icons.rs): a Lucide icon, white on a tile of one of
+  // the theme's accent hues.
+  const symbols: Record<string, [number, string]> = {
+    web: [0, '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>'],
+    file: [0, '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>'],
+    window: [1, '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M10 4v4"/><path d="M2 8h20"/><path d="M6 4v4"/>'],
+    snippet: [2, '<path d="M17 5H3"/><path d="M21 12H8"/><path d="M21 19H8"/><path d="M3 12v7"/>'],
+    calc: [3, '<rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16" y1="14" y2="18"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/>'],
+    link: [4, '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'],
+    command: [5, '<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>'],
+  };
+  const eq = "calc";
+  const win = "window";
+  const file = "file";
+  const gear = "command";
+
+  // The real macOS app icons, taken from each vendor's current macOS release (the .icns in the
+  // app bundle), so the list looks like it does on a Mac.
+  const app = (name: string, file: string): Row => ({
+    icon: `img:/icons/${file}.png`,
+    title: name,
+    subtitle: "/Applications",
+    kind: "Application",
+  });
+  // What an empty query lists, like the app's most used items, narrowed as each letter is typed.
+  const apps: Row[] = [
+    app("Figma", "figma"),
+    app("Spotify", "spotify"),
+    app("Discord", "discord"),
+    app("Firefox", "firefox"),
+    app("Obsidian", "obsidian"),
+    app("1Password", "1password"),
+    app("Brave", "brave"),
+    app("Signal", "signal"),
+  ];
+  const appRow = (name: string) => apps.find((row) => row.title === name)!;
+
+  const demo = document.querySelector<HTMLElement>(".demo")!;
+  // The AI Usage view's sample limits, the same ones the app's own demo scene shows.
+  const usage = (provider: string, icon: string, limits: [string, string, number][]): [string, Row[]] => [
+    provider,
+    limits.map(([title, subtitle, left]) => ({ icon: `img:${icon}`, title, subtitle, left })),
+  ];
+  const aiUsage: View = {
+    chip: "AI Usage",
+    placeholder: "Filter AI usage…",
+    action: "Open Usage Page",
+    sections: [
+      usage("Claude", demo.dataset.claude!, [
+        ["5-hour session", "resets in 2h 14m", 62],
+        ["Weekly", "resets in 3d 5h", 39],
+        ["Weekly Opus", "resets in 3d 5h", 12],
+      ]),
+      usage("ChatGPT", demo.dataset.chatgpt!, [
+        ["5-hour session", "resets in 4h 2m", 88],
+        ["Weekly", "resets in 5d 9h", 73],
+      ]),
+    ],
+  };
+
+  const scenes: Scene[] = [
+    {
+      caption: "Find any app in a few keystrokes",
+      query: "fig",
+      action: "Open Application",
+      rows: [appRow("Figma")],
+    },
+    {
+      caption: "Search files",
+      query: "report",
+      showAt: 3,
+      action: "Open File",
+      rows: [
+        { icon: file, title: "Q3 Report.pdf", subtitle: "~/Documents", kind: "File" },
+        { icon: file, title: "report-draft.docx", subtitle: "~/Desktop", kind: "File" },
+        { icon: file, title: "report.md", subtitle: "~/Projects/runecast/docs", kind: "File" },
+      ],
+    },
+    {
+      caption: "Snap windows into place",
+      query: "half",
+      showAt: 2,
+      action: "Move Window",
+      rows: [
+        { icon: win, title: "Top Half", subtitle: "Window Management", kind: "Window" },
+        { icon: win, title: "Left Half", subtitle: "Window Management", keys: "Ctrl+Alt+←", kind: "Window" },
+        { icon: win, title: "Bottom Half", subtitle: "Window Management", kind: "Window" },
+        { icon: win, title: "Right Half", subtitle: "Window Management", keys: "Ctrl+Alt+→", kind: "Window" },
+      ],
+    },
+    {
+      caption: "Calculate inline",
+      query: "(1200+340)*1.12",
+      action: "Copy Answer",
+      rows: [{ icon: eq, title: "1,724.8", subtitle: "(1200+340)*1.12 =", kind: "Copy" }],
+    },
+    {
+      caption: "Convert units",
+      query: "5 km in mi",
+      action: "Copy Answer",
+      rows: [{ icon: eq, title: "3.1069 mi", subtitle: "5 km =", kind: "Copy" }],
+    },
+    {
+      caption: "Convert currency",
+      query: "100 usd to php",
+      action: "Copy Answer",
+      rows: [{ icon: eq, title: "5,800 PHP", subtitle: "100 USD =", kind: "Copy" }],
+    },
+    {
+      caption: "Convert time zones",
+      query: "3pm pst in manila",
+      action: "Copy Answer",
+      rows: [{ icon: eq, title: "7:00 AM (next day)", subtitle: "3:00 PM PST in Manila · Tue 10 Nov", kind: "Copy" }],
+    },
+    {
+      caption: "Quicklinks with arguments",
+      query: "gh rune",
+      action: "Open Quicklink",
+      rows: [{ icon: "link", title: "Search GitHub: rune", subtitle: "https://github.com/search?q=rune", kind: "Quicklink" }],
+    },
+    {
+      caption: "Paste saved snippets",
+      query: "sig",
+      showAt: 2,
+      action: "Paste Snippet",
+      rows: [
+        { icon: "snippet", title: "Email Signature", subtitle: "Best,", kind: "Snippet" },
+        appRow("Signal"),
+        { icon: gear, title: "Runecast Settings", subtitle: "Hotkeys, snippets, quicklinks and more", keys: "Ctrl+,", kind: "Command" },
+      ],
+    },
+    {
+      caption: "Run system commands",
+      query: "dark",
+      showAt: 2,
+      action: "Run Command",
+      rows: [{ icon: gear, title: "Toggle Dark Mode", subtitle: "System", kind: "Command" }],
+    },
+    {
+      caption: "Check your Claude and ChatGPT limits",
+      query: "ai usage",
+      showAt: 2,
+      action: "Run Command",
+      rows: [{ icon: gear, title: "AI Usage", subtitle: "Claude and ChatGPT plan limits left", kind: "Command" }],
+      opens: aiUsage,
+    },
+  ];
+
+  // Every letter of the query, in order, somewhere in the name.
+  const matches = (title: string, q: string) => {
+    let at = 0;
+    for (const c of q.toLowerCase()) if ((at = title.toLowerCase().indexOf(c, at) + 1) === 0) return false;
+    return true;
+  };
+
+  const LEAD = 700; // empty panel before typing; the first scene lingers on it
+  const KEY = 85; // per keystroke
+  const HOLD = 1700; // result on screen before ↩
+  const PRESS = 450; // ↩ flash, then the next scene
+  const OPEN = 3200; // a view that ↩ opened stays this long
+
+  const stage = demo.querySelector<HTMLElement>(".stage")!;
+  const panel = demo.querySelector<HTMLElement>(".panel")!;
+  const query = panel.querySelector(".query")!;
+  const placeholder = panel.querySelector<HTMLElement>(".placeholder")!;
+  const chip = panel.querySelector<HTMLElement>(".chip")!;
+  const close = panel.querySelector(".close")!;
+  const rows = panel.querySelector(".rows")!;
+  const action = panel.querySelector(".action")!;
+  const enter = panel.querySelector(".enter")!;
+  const caption = demo.querySelector(".caption")!;
+  const progress = demo.querySelector(".progress")!;
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // The panel is laid out at the screenshots' size (760×468) and scaled to fit.
+  new ResizeObserver(() => panel.style.setProperty("--scale", String(stage.clientWidth / 760))).observe(stage);
+
+  function escape(s: string) {
+    return s.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+  }
+
+  function rowHtml(row: Row, selected: boolean) {
+    const tile = row.icon.startsWith("img:")
+      ? `<img class="appicon" src="${row.icon.slice(4)}" alt="">`
+      : `<span class="tile" style="background:var(--hue-${symbols[row.icon][0]})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${symbols[row.icon][1]}</svg></span>`;
+    // Like the app, a limit turns pink once less than 15% is left.
+    const end =
+      row.left === undefined
+        ? `${row.keys ? `<kbd>${escape(row.keys)}</kbd>` : ""}<span class="kind">${row.kind}</span>`
+        : `<span class="meter${row.left < 15 ? " low" : ""}"><i style="width:${row.left}%"></i></span><span class="left">${row.left}% left</span>`;
+    return `<li class="${selected ? "selected" : ""}">${tile}<b>${escape(row.title)}</b>${
+      row.subtitle ? `<span class="sub">${escape(row.subtitle)}</span>` : ""
+    }<span class="spacer"></span>${end}</li>`;
+  }
+
+  function setView(view?: View) {
+    chip.hidden = !view;
+    chip.textContent = view?.chip ?? "";
+    placeholder.textContent = view?.placeholder ?? "Search for apps and commands…";
+    close.textContent = view ? "Back" : "Close";
+  }
+
+  function open(view: View) {
+    setView(view);
+    query.textContent = "";
+    placeholder.hidden = false;
+    let first = true;
+    rows.innerHTML = view.sections
+      .map(([heading, list]) => `<li class="heading">${heading}</li>${list.map((row) => {
+        const html = rowHtml(row, first);
+        first = false;
+        return html;
+      }).join("")}`)
+      .join("");
+    action.textContent = view.action;
+  }
+
+  function render(scene: Scene, typed: string) {
+    setView();
+    query.textContent = typed;
+    placeholder.hidden = typed.length > 0;
+    const found = typed.length >= (scene.showAt ?? scene.query.length);
+    const hits = found ? scene.rows : apps.filter((row) => matches(row.title, typed)).slice(0, 4);
+    const google: Row = { icon: "web", title: `Search Google for “${typed}”`, subtitle: "Web", kind: "Search" };
+    const list = typed ? [...hits, google] : apps;
+    rows.innerHTML = list.map((row, i) => rowHtml(row, i === 0)).join("");
+    action.textContent = found ? scene.action : list.length > 1 ? "Open Application" : "Search Google";
+  }
+
+  const segments = scenes.map((scene, i) => {
+    const segment = document.createElement("button");
+    segment.className = "segment";
+    segment.setAttribute("aria-label", scene.caption);
+    segment.innerHTML = "<span></span>";
+    segment.addEventListener("click", () => play(i));
+    progress.append(segment);
+    return segment;
+  });
+
+  let current = 0;
+  let run = 0;
+  const wait = (ms: number) => new Promise((done) => setTimeout(done, ms));
+
+  // Spaces and symbols land a little slower, like real typing. The first scene types slower so the
+  // app list visibly narrows.
+  const keyDelay = (q: string, n: number) =>
+    (KEY + (/[a-z0-9]/i.test(q[n - 1]) ? 0 : 40) - (n % 3) * 15) * (current === 0 ? 2.5 : 1);
+
+  async function play(index: number) {
+    const id = ++run;
+    current = (index + scenes.length) % scenes.length;
+    const scene = scenes[current];
+    caption.textContent = scene.caption;
+    segments.forEach((s, i) => {
+      s.classList.toggle("done", i < current);
+      s.classList.remove("active");
+    });
+
+    if (reduced) {
+      if (scene.opens) open(scene.opens);
+      else render(scene, scene.query);
+      segments[current].classList.add("active");
+      return;
+    }
+
+    // The segment fills over exactly the scene's length, like a video timeline.
+    const lead = current === 0 ? LEAD * 2.5 : LEAD;
+    let length = lead + HOLD + PRESS + (scene.opens ? OPEN : 0);
+    for (let n = 1; n <= scene.query.length; n++) length += keyDelay(scene.query, n);
+    const bar = segments[current].querySelector("span")!;
+    bar.style.animationDuration = `${length}ms`;
+    void segments[current].offsetWidth;
+    segments[current].classList.add("active");
+
+    render(scene, "");
+    await wait(lead);
+    for (let n = 1; n <= scene.query.length; n++) {
+      if (id !== run) return;
+      render(scene, scene.query.slice(0, n));
+      await wait(keyDelay(scene.query, n));
+    }
+    await wait(HOLD);
+    if (id !== run) return;
+    panel.classList.add("pressed");
+    enter.classList.add("down");
+    await wait(PRESS);
+    panel.classList.remove("pressed");
+    enter.classList.remove("down");
+    if (id !== run) return;
+    if (scene.opens) {
+      open(scene.opens);
+      await wait(OPEN);
+    }
+    if (id === run) play(current + 1);
+  }
+
+  play(0);
+</script>
+
+<style>
+  .demo {
+    margin-top: 72px;
+  }
+
+  .stage {
+    position: relative;
+    aspect-ratio: 760 / 468;
+  }
+
+  /* The app's dark theme, measured from its `--snap` renders; the light one follows. */
+  .panel {
+    --p-bg: #1c1d20;
+    --p-border: #333436;
+    --p-text: #ededee;
+    --p-muted: #8e9095;
+    --p-muted2: #a0a2a6;
+    --p-placeholder: rgb(142 144 149 / 0.8);
+    --p-line: #28292c;
+    --p-selected: #273e5c;
+    --p-press: 1.35;
+    --p-control: #303033;
+    --p-control-on: #3a4f6a;
+    --p-chip: #23344b;
+    --p-rowkey: #2b2c2f;
+    --p-key: #2b2c2f;
+    --p-key-down: #4a4c51;
+    --p-bar: #17171a;
+    --p-sep: #2c2c2f;
+    /* tok::accent's six hues (rune's oklch accents). */
+    --hue-0: #4392f7;
+    --hue-1: #a473ee;
+    --hue-2: #ee5b9a;
+    --hue-3: #f48d2f;
+    --hue-4: #3aba6a;
+    --hue-5: #888c94;
+    --scale: 1;
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    width: 760px;
+    height: 468px;
+    overflow: hidden;
+    border: 1px solid var(--p-border);
+    border-radius: 12px;
+    background: var(--p-bg);
+    color: var(--p-text);
+    font-size: 15px;
+    letter-spacing: 0;
+    transform: scale(var(--scale));
+    transform-origin: 0 0;
+    box-shadow: 0 30px 80px -20px rgb(0 0 0 / 0.7);
+    user-select: none;
+  }
+
+  :global([data-theme="light"]) .panel {
+    --p-bg: #fff;
+    --p-border: #ebebeb;
+    --p-text: #1a1c1f;
+    --p-muted: #606369;
+    --p-muted2: #606369;
+    --p-placeholder: #808287;
+    --p-line: #dedede;
+    --p-selected: #ddeafa;
+    --p-press: 0.94;
+    --p-control: #c7c7c8;
+    --p-control-on: #adb7c4;
+    --p-chip: #d5e5f9;
+    --p-rowkey: #c7c7c8;
+    --p-key: #c1c2c3;
+    --p-key-down: #a5a7aa;
+    --p-bar: #f7f8f9;
+    --p-sep: #d7d8d9;
+    --hue-0: #2f7fe3;
+    --hue-1: #9260da;
+    --hue-2: #d94788;
+    --hue-3: #df7b0c;
+    --hue-4: #1da758;
+    --hue-5: #777a82;
+    box-shadow:
+      0 0 0 1px rgb(0 0 0 / 0.02),
+      0 30px 70px -24px rgb(0 0 0 / 0.25);
+  }
+
+  .search {
+    display: flex;
+    flex: none;
+    align-items: center;
+    height: 60px;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--p-line);
+    font-size: 20px;
+  }
+
+  .glass {
+    width: 13px;
+    height: 13px;
+    margin-right: 22px;
+    fill: none;
+    stroke: var(--p-muted2);
+    stroke-width: 1.8;
+    stroke-linecap: round;
+  }
+
+  .query {
+    white-space: pre;
+  }
+
+  .caret {
+    width: 1.5px;
+    height: 23px;
+    margin-left: 1px;
+    background: var(--p-text);
+    animation: blink 1s steps(1) infinite;
+  }
+
+  .placeholder {
+    color: var(--p-placeholder);
+  }
+
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+
+  .rows {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    margin: 0;
+    padding: 8px;
+    list-style: none;
+  }
+
+  .rows :global(li) {
+    display: flex;
+    align-items: center;
+    height: 44px;
+    padding: 0 10px;
+    border-radius: 9px;
+    white-space: nowrap;
+  }
+
+  .rows :global(li.selected) {
+    background: var(--p-selected);
+    transition: filter 0.15s;
+  }
+
+  .pressed .rows :global(li.selected) {
+    filter: brightness(var(--p-press));
+  }
+
+  .rows :global(.tile) {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    margin-right: 12px;
+    border-radius: 7px;
+    color: #fff;
+  }
+
+  .rows :global(.tile svg) {
+    width: 16px;
+    height: 16px;
+  }
+
+  .rows :global(.appicon) {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    margin: 0 11px 0 -1px;
+  }
+
+  .rows :global(b) {
+    font-weight: 500;
+  }
+
+  .rows :global(.sub) {
+    overflow: hidden;
+    margin-left: 13px;
+    color: var(--p-muted);
+    font-size: 14px;
+    text-overflow: ellipsis;
+  }
+
+  .chip {
+    margin-right: 14px;
+    padding: 3px 10px;
+    border-radius: 7px;
+    background: var(--p-chip);
+    font-size: 15px;
+    font-weight: 500;
+  }
+
+  .rows :global(li.heading) {
+    height: 34px;
+    padding-top: 4px;
+    color: var(--p-muted);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .rows :global(li.heading ~ li.heading) {
+    margin-top: 10px;
+  }
+
+  .rows :global(.meter) {
+    width: 120px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--p-control);
+  }
+
+  .rows :global(li.selected .meter) {
+    background: var(--p-control-on);
+  }
+
+  .rows :global(.meter i) {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--hue-0);
+  }
+
+  .rows :global(.meter.low i) {
+    background: var(--hue-2);
+  }
+
+  .rows :global(.left) {
+    width: 64px;
+    color: var(--p-muted2);
+    font-size: 13.5px;
+    text-align: right;
+  }
+
+  .rows :global(.spacer) {
+    flex: 1;
+  }
+
+  .rows :global(kbd),
+  .bar kbd {
+    margin-left: 12px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--p-rowkey);
+    color: var(--p-muted2);
+    font: inherit;
+    font-size: 13px;
+  }
+
+  .rows :global(.kind) {
+    margin-left: 12px;
+    color: var(--p-muted2);
+    font-size: 13.5px;
+  }
+
+  .bar {
+    display: flex;
+    flex: none;
+    align-items: center;
+    height: 38px;
+    padding: 0 16px 0 18px;
+    border-top: 1px solid var(--p-line);
+    background: var(--p-bar);
+    color: var(--p-muted);
+    font-size: 13px;
+  }
+
+  .bar img {
+    width: 14px;
+    height: 14px;
+  }
+
+  .brand {
+    flex: 1;
+    margin-left: 12px;
+  }
+
+  .action {
+    color: var(--p-text);
+    font-weight: 500;
+  }
+
+  .bar kbd {
+    background: var(--p-key);
+    transition: background 0.1s;
+  }
+
+  .bar kbd.down {
+    background: var(--p-key-down);
+    color: var(--p-text);
+  }
+
+  .sep {
+    width: 1px;
+    height: 16px;
+    margin: 0 10px;
+    background: var(--p-sep);
+  }
+
+  .caption {
+    margin: 28px 0 0;
+    text-align: center;
+    font-size: 15px;
+    letter-spacing: -0.01em;
+  }
+
+  .progress {
+    display: flex;
+    gap: 6px;
+    max-width: 420px;
+    margin: 16px auto 0;
+  }
+
+  .progress :global(.segment) {
+    flex: 1;
+    height: 16px;
+    padding: 6px 0;
+    border: 0;
+    background: none;
+  }
+
+  .progress :global(.segment span) {
+    display: block;
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(var(--text), var(--text)) no-repeat 0 0 / 0 100% var(--line);
+  }
+
+  .progress :global(.segment.done span) {
+    background-size: 100% 100%;
+  }
+
+  .progress :global(.segment.active span) {
+    animation: fill linear forwards;
+  }
+
+  @keyframes fill {
+    to {
+      background-size: 100% 100%;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .caret {
+      animation: none;
+    }
+    .progress :global(.segment.active span) {
+      animation: none;
+      background-size: 100% 100%;
+    }
+  }
+</style>
