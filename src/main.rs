@@ -30,7 +30,7 @@ use settings::Settings;
 use rune::tok::{self, type_};
 use rune::{
     Align, App, AppHandle, AppSpec, Color, Cx, DisplayTarget, El, Image, ImageCache, Key, KeyEvent, OverlayPlacement,
-    ScreenEdge, ScrollSpec, TextEdit, TextStyle, Tx, Waker, WindowOptions, WindowSpec, col, el, row, spacer, text,
+    ScreenEdge, ScrollSpec, TextEdit, TextStyle, Titlebar, Tx, Waker, WindowOptions, WindowSpec, col, el, row, spacer, text,
     text_input,
 };
 const WIDTH: f32 = 760.0;
@@ -40,6 +40,8 @@ const VISIBLE_ROWS: usize = 8;
 const FOOTER_H: f32 = 38.0;
 const HEIGHT: f32 = SEARCH_H + 1.0 + 8.0 + ROW_H * VISIBLE_ROWS as f32 + 8.0 + 1.0 + FOOTER_H;
 const ICON: f32 = 26.0;
+/// Runecast's logo, drawn by `mark` in the panel's footer and the Settings sidebar.
+const LOGO: &[u8] = include_bytes!("../assets/icon.png");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -57,6 +59,7 @@ struct State {
     picked: usize,
     /// Made in `setup`, which has the waker that redraws once an icon decodes.
     icons: Option<ImageCache>,
+    logo: Option<Image>,
     /// Live handles keep decoded icons in the cache; one per app shown so far.
     icon_handles: HashMap<PathBuf, Image>,
     watching: bool,
@@ -71,7 +74,7 @@ impl State {
         query.focused = true;
         let mut s = State {
             mode: Mode::Root, query, config, items, history, results: Vec::new(), picked: 0,
-            icons: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None,
+            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None,
         };
         s.refresh();
         s
@@ -150,11 +153,13 @@ fn clip_item(text: &str) -> Item {
 }
 
 fn setup(s: &mut State, waker: Waker) {
-    s.icons = Some(ImageCache::new(waker));
+    let cache = ImageCache::new(waker);
+    s.logo = Some(cache.load(LOGO));
+    s.icons = Some(cache);
     s.load_icons();
     if rune::is_headless() {
         // Screenshots show icons, not the frame before they decode.
-        for icon in s.icon_handles.values() {
+        for icon in s.icon_handles.values().chain(&s.logo) {
             let _ = icon.wait();
         }
     } else if let Some(me) = s.me.clone() && !s.watching {
@@ -274,7 +279,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 
     let action = s.results.get(s.picked).map_or("", |it| it.kind.verb());
     let footer = row().h(FOOTER_H).px(16.0).gap(10.0).center_y().fill(t.bg.alpha(0.5))
-        .child(el().size(14.0, 14.0).radius(4.0).fill(accent))
+        .child(mark(s.logo.as_ref(), 16.0, accent))
         .child(text("Runecast").font(type_::LABEL).color(t.text_secondary))
         .child(spacer())
         .child(text(action).font(type_::LABEL).color(t.text))
@@ -346,6 +351,14 @@ fn badge(item: &Item, dark: bool, t: &tok::Theme) -> El {
         _ => (t.control_off, t.text),
     };
     row().size(ICON, ICON).radius(7.0).center().fill(fill).child(text(glyph).font(type_::TITLE).color(ink))
+}
+
+/// The logo at `size` points, or a plain square of `fallback` until it decodes.
+fn mark(logo: Option<&Image>, size: f32, fallback: Color) -> El {
+    match logo {
+        Some(img) if img.is_ready() && img.error().is_none() => el().size(size, size).pixels(img.pixels()),
+        _ => el().size(size, size).radius(size * 0.22).fill(fallback),
+    }
 }
 
 fn keycap(label: impl Into<String>, t: &tok::Theme) -> El {
@@ -426,10 +439,11 @@ fn main() {
         let launcher = App::new(spec).windowless().accessory();
         let settings_spec = AppSpec {
             scenes: settings::SCENES,
+            setup: Some(settings::setup),
             min_size: Some((640.0, 460.0)),
             ..AppSpec::new("Runecast Settings", settings::SIZE, || unreachable!(), settings::view)
         };
-        let settings = App::new(settings_spec).windowless().keep_running();
+        let settings = App::new(settings_spec).windowless().keep_running().titlebar(Titlebar::new(settings::TITLEBAR));
         let (me, settings_handle) = (launcher.handle(), settings.handle());
         let registry = Arc::new(Mutex::new(Registry::new(me.clone())));
 

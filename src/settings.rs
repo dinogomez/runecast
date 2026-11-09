@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rune::{AppHandle, Cx, El, ScrollSpec, Shortcut, ShortcutError, TextEdit, TextStyle, Tx, col, el, row, spacer, text};
+use rune::{AppHandle, Cx, Image, ImageCache, Waker, El, ScrollSpec, Shortcut, ShortcutError, TextEdit, TextStyle, Tx, col, el, row, spacer, text};
 use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
 
 use crate::State;
@@ -13,6 +13,8 @@ use crate::hotkeys::{Hotkey, Registry};
 use crate::login;
 
 pub const SIZE: (f32, f32) = (760.0, 540.0);
+/// The band the window drags by. On macOS the traffic lights sit in it, over the sidebar.
+pub const TITLEBAR: f32 = 52.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -59,6 +61,8 @@ pub struct Settings {
     keyword: TextEdit,
     url: TextEdit,
     registry: Option<Arc<Mutex<Registry>>>,
+    /// Made in `setup`, which has the waker that redraws once the logo decodes.
+    logo: Option<(ImageCache, Image)>,
     /// None in headless scenes, which then never touch the disk.
     launcher: Option<AppHandle<State>>,
 }
@@ -68,7 +72,7 @@ impl Settings {
         let mut s = Settings {
             tab: Tab::General, config, recorders: Vec::new(), open_select: None, login: false, cleared: false,
             snippet: 0, link: 0, name: TextEdit::new(""), body: TextEdit::new(""), keyword: TextEdit::new(""),
-            url: TextEdit::new(""), registry, launcher,
+            url: TextEdit::new(""), registry, logo: None, launcher,
         };
         s.refresh();
         s
@@ -217,10 +221,14 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     let dark = s.config.general.appearance.dark(cx.system_dark());
     let k = Kit::neutral(dark);
     let mut layer = Vec::new();
+    // What the window controls take: the traffic lights on macOS, nothing where the native
+    // titlebar stays.
+    let chrome = cx.chrome_insets();
 
-    let mut sidebar = col().key("tabs").w(200.0).h_full().padding(12.0).gap(2.0).fill(k.c.bg_base)
+    let mut sidebar = col().key("tabs").w(200.0).h_full().px(12.0).pb(12.0).gap(2.0).fill(k.c.bg_base)
+        .child(el().key("sidebar-drag").w_full().h(chrome.height.max(12.0)).window_drag())
         .child(row().h(40.0).px(8.0).gap(10.0).center_y()
-            .child(el().size(16.0, 16.0).radius(5.0).fill(k.c.bg_accent))
+            .child(crate::mark(s.logo.as_ref().map(|(_, img)| img), 18.0, k.c.bg_accent))
             .child(text("Runecast").font(k.ty.ui_medium).color(k.c.text_base)));
     for tab in Tab::ALL {
         let on = tab == s.tab;
@@ -238,7 +246,8 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
         Tab::Snippets | Tab::Quicklinks => editor(s, &k),
     };
     let content = col().grow(1.0).min_w(0.0).h_full().fill(k.c.page)
-        .child(row().h(56.0).px(28.0).center_y().child(text(s.tab.title()).font(TextStyle::new(18.0, 600.0)).color(k.c.text_base)))
+        .child(row().key("header").w_full().h(56.0f32.max(chrome.height)).px(28.0).center_y().window_drag()
+            .child(text(s.tab.title()).font(TextStyle::new(18.0, 600.0)).color(k.c.text_base)))
         .child(el().h(1.0).w_full().fill(k.c.border_muted))
         .child(body);
     rune_kit::root(row().w_full().h_full().fill(k.c.page).child(sidebar).child(el().w(1.0).h_full().fill(k.c.border_muted)).child(content), layer)
@@ -419,6 +428,15 @@ fn keyword_edit(s: &mut Settings) -> &mut TextEdit {
 
 fn url_edit(s: &mut Settings) -> &mut TextEdit {
     &mut s.url
+}
+
+pub fn setup(s: &mut Settings, waker: Waker) {
+    let cache = ImageCache::new(waker);
+    let logo = cache.load(crate::LOGO);
+    if rune::is_headless() {
+        let _ = logo.wait();
+    }
+    s.logo = Some((cache, logo));
 }
 
 pub const SCENES: &[(&str, fn(&mut Settings))] = &[
