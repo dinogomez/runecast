@@ -2617,7 +2617,10 @@ dependencies = [
 name = "runecast"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "rune",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

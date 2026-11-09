@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::config::Config;
+use crate::wm::Layout;
 use crate::{calc, fuzzy};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -11,6 +13,10 @@ pub enum Kind {
     Command,
     Calculator,
     Web,
+    Snippet,
+    Quicklink,
+    Window,
+    Clip,
 }
 
 impl Kind {
@@ -20,6 +26,24 @@ impl Kind {
             Kind::Command => "Command",
             Kind::Calculator => "Copy",
             Kind::Web => "Search",
+            Kind::Snippet => "Snippet",
+            Kind::Quicklink => "Quicklink",
+            Kind::Window => "Window",
+            Kind::Clip => "Clipboard",
+        }
+    }
+
+    /// What ↩ does, for the footer.
+    pub fn verb(self) -> &'static str {
+        match self {
+            Kind::App => "Open Application",
+            Kind::Command => "Run Command",
+            Kind::Calculator => "Copy Answer",
+            Kind::Web => "Search the Web",
+            Kind::Snippet => "Paste Snippet",
+            Kind::Quicklink => "Open Quicklink",
+            Kind::Window => "Move Window",
+            Kind::Clip => "Paste",
         }
     }
 }
@@ -32,6 +56,12 @@ pub enum Action {
     Shell(String),
     Url(String),
     Copy(String),
+    /// Copy, then paste into the app that was in front.
+    Paste(String),
+    /// Opens `url`; one with `{query}` and nothing typed after its keyword asks for the argument.
+    Quicklink { url: String, keyword: String },
+    Window(Layout),
+    ClipboardHistory,
     Quit,
 }
 
@@ -41,15 +71,19 @@ pub struct Item {
     pub subtitle: String,
     pub kind: Kind,
     pub action: Action,
+    /// What `ImageCache::app_icon` draws: an `.app` bundle on macOS, a `.desktop` file on Linux.
+    pub icon: Option<PathBuf>,
+    /// A shortcut shown at the row's end, such as ⌃⌥← for Left Half.
+    pub hotkey: Option<&'static str>,
 }
 
 impl Item {
-    fn new(title: impl Into<String>, subtitle: impl Into<String>, kind: Kind, action: Action) -> Self {
-        Item { title: title.into(), subtitle: subtitle.into(), kind, action }
+    pub fn new(title: impl Into<String>, subtitle: impl Into<String>, kind: Kind, action: Action) -> Self {
+        Item { title: title.into(), subtitle: subtitle.into(), kind, action, icon: None, hotkey: None }
     }
 }
 
-pub const MAX_RESULTS: usize = 8;
+pub const MAX_RESULTS: usize = 50;
 
 /// The rows for `query`: the calculator answer first, then the best fuzzy matches, then a web search.
 /// An empty query lists the first apps and commands so the panel never opens blank.
@@ -63,28 +97,81 @@ pub fn search(items: &[Item], query: &str) -> Vec<Item> {
         let answer = calc::format(v);
         out.push(Item::new(answer.clone(), format!("{query} ="), Kind::Calculator, Action::Copy(answer.replace(',', ""))));
     }
+    for it in items {
+        if let Action::Quicklink { url, keyword } = &it.action && let Some(arg) = argument(query, keyword) {
+            let url = fill(url, arg);
+            out.push(Item::new(format!("{}: {arg}", it.title), url.clone(), Kind::Quicklink, Action::Url(url)));
+        }
+    }
     let mut hits: Vec<(i32, &Item)> = items.iter().filter_map(|it| fuzzy::score(query, &it.title).map(|s| (s, it))).collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title)));
-    out.extend(hits.into_iter().take(MAX_RESULTS - 1).map(|(_, it)| it.clone()));
+    out.extend(hits.into_iter().map(|(_, it)| it.clone()));
+    out.truncate(MAX_RESULTS - 1);
     let url = format!("https://www.google.com/search?q={}", encode(query));
     out.push(Item::new(format!("Search Google for “{query}”"), "Web", Kind::Web, Action::Url(url)));
     out.truncate(MAX_RESULTS);
     out
 }
 
-/// Everything searchable on this machine: apps by name, then the built-in commands.
-pub fn load() -> Vec<Item> {
+/// What's typed after `keyword` and a space, when the query starts with them (ignoring case).
+fn argument<'q>(query: &'q str, keyword: &str) -> Option<&'q str> {
+    let head = query.get(..keyword.len())?;
+    let rest = query[keyword.len()..].strip_prefix(' ')?.trim();
+    (head.eq_ignore_ascii_case(keyword) && !rest.is_empty()).then_some(rest)
+}
+
+/// `url` with `{query}` replaced by `arg`, encoded for a URL.
+pub fn fill(url: &str, arg: &str) -> String {
+    url.replace("{query}", &encode(arg))
+}
+
+/// Everything searchable on this machine: apps by name, then commands, window layouts,
+/// snippets and quicklinks.
+pub fn load(config: &Config) -> Vec<Item> {
     let mut items = scan_apps();
     items.sort_by_key(|it| it.title.to_lowercase());
     items.dedup_by(|a, b| a.title == b.title);
     items.extend(commands());
+    if cfg!(target_os = "macos") {
+        items.extend(layouts());
+    }
+    items.extend(extras(config));
     items
 }
 
-/// Runs an item's action that needs the OS. `Url`, `Copy` and `Quit` go through Rune's `Tx` instead.
+pub fn layouts() -> impl Iterator<Item = Item> {
+    Layout::ALL.into_iter().map(|l| Item { hotkey: l.hotkey(), ..Item::new(l.title(), "Window Management", Kind::Window, Action::Window(l)) })
+}
+
+/// The user's snippets and quicklinks, as rows.
+pub fn extras(config: &Config) -> Vec<Item> {
+    let snippets = config.snippets.iter().map(|s| {
+        let preview = s.text.lines().next().unwrap_or_default();
+        Item::new(&s.name, preview, Kind::Snippet, Action::Paste(s.text.clone()))
+    });
+    let links = config.quicklinks.iter().map(|q| {
+        let keyword = q.keyword();
+        let hint = if q.url.contains("{query}") { format!("{keyword} …") } else { q.url.clone() };
+        Item::new(&q.name, hint, Kind::Quicklink, Action::Quicklink { url: q.url.clone(), keyword })
+    });
+    snippets.chain(links).collect()
+}
+
+/// Presses ⌘V (Ctrl+V on Linux, with xdotool or wtype) in the app in front, a moment after the
+/// caller's copy, once that has landed. Pasting on macOS needs Accessibility permission.
+pub fn paste_after_copy() {
+    let line = if cfg!(target_os = "macos") {
+        r#"sleep 0.2; osascript -e 'tell application "System Events" to keystroke "v" using command down'"#
+    } else {
+        "sleep 0.2; if command -v xdotool >/dev/null; then xdotool key ctrl+v; elif command -v wtype >/dev/null; then wtype -M ctrl v -m ctrl; fi"
+    };
+    spawn(&Action::Shell(line.into()));
+}
+
+/// Runs an item's action that's a process: `OpenPath` and `Shell`. The rest go through Rune's `Tx`.
 pub fn spawn(action: &Action) {
     let result = match action {
-        Action::OpenPath(path) => Command::new("open").arg(path).spawn(),
+        Action::OpenPath(path) => Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(path).spawn(),
         Action::Shell(line) => Command::new("sh").arg("-c").arg(line).spawn(),
         _ => return,
     };
@@ -107,6 +194,8 @@ fn commands() -> Vec<Item> {
         cmd("Sleep", "systemctl suspend");
         cmd("Open Downloads", "xdg-open ~/Downloads");
     }
+    out.push(Item { hotkey: Some(if cfg!(target_os = "macos") { "⌃⌥V" } else { "Ctrl+Alt+V" }), ..Item::new("Clipboard History", "Runecast", Kind::Command, Action::ClipboardHistory) });
+    out.push(Item::new("Edit Snippets and Quicklinks", "Runecast", Kind::Command, Action::OpenPath(crate::config::path())));
     out.push(Item::new("Quit Runecast", "Runecast", Kind::Command, Action::Quit));
     out
 }
@@ -141,7 +230,7 @@ fn mac_app(path: &Path) -> Option<Item> {
     (path.extension()? == "app").then(|| {
         let name = path.file_stem().unwrap().to_string_lossy().into_owned();
         let folder = path.parent().map(|p| p.display().to_string()).unwrap_or_default();
-        Item::new(name, folder, Kind::App, Action::OpenPath(path.to_path_buf()))
+        Item { icon: Some(path.to_path_buf()), ..Item::new(name, folder, Kind::App, Action::OpenPath(path.to_path_buf())) }
     })
 }
 
@@ -171,7 +260,7 @@ fn desktop_entry(path: &Path) -> Option<Item> {
     }
     // Field codes (%f, %U, …) are for files the launcher would pass; there are none.
     let exec: String = exec?.split_whitespace().filter(|w| !w.starts_with('%')).collect::<Vec<_>>().join(" ");
-    Some(Item::new(name?, comment, Kind::App, Action::Shell(exec)))
+    Some(Item { icon: Some(path.to_path_buf()), ..Item::new(name?, comment, Kind::App, Action::Shell(exec)) })
 }
 
 fn encode(s: &str) -> String {
@@ -201,11 +290,23 @@ mod tests {
 
     #[test]
     fn best_match_ranks_first_and_rows_are_capped() {
-        let mut items: Vec<Item> = (0..20).map(|i| app(&format!("Shutter {i}"))).collect();
+        let mut items: Vec<Item> = (0..MAX_RESULTS + 10).map(|i| app(&format!("Shutter {i}"))).collect();
         items.push(app("Terminal"));
         let rows = search(&items, "ter");
         assert_eq!(rows[0].title, "Terminal");
         assert_eq!(rows.len(), MAX_RESULTS);
+    }
+
+    #[test]
+    fn quicklink_keyword_takes_an_argument() {
+        let items = extras(&crate::config::example());
+        let rows = search(&items, "GH rune ui");
+        assert_eq!(rows[0].title, "Search GitHub: rune ui");
+        assert!(matches!(rows[0].action, Action::Url(ref u) if u == "https://github.com/search?q=rune+ui"));
+        // Without an argument, or without the space, the keyword is an ordinary search.
+        assert!(search(&items, "gh").iter().all(|r| !r.title.contains(':')));
+        assert!(search(&items, "ghost").iter().all(|r| !r.title.contains(':')));
+        assert_eq!(fill("https://x.dev/?q={query}", "a&b c"), "https://x.dev/?q=a%26b+c");
     }
 
     #[test]
