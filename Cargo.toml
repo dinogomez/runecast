@@ -1,0 +1,12 @@
+[package]
+name = "runecast"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A Raycast-style launcher built with Rune"
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "d751f07106eac47bdd4e33756dee71e1f593c9e2" }
+
+[profile.release]
+lto = "thin"
