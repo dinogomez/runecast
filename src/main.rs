@@ -114,6 +114,12 @@ impl State {
                 self.files.clear();
             }
         }
+        // Typing "ai usage" fetches the limits once per opening, to pin them above the other rows.
+        if self.mode == Mode::Root && ai::asked_for(&self.query.text) && self.ai.is_empty()
+            && let Some(fetch) = &self.ai_fetch && !fetch.is_pending()
+        {
+            fetch.request((), |_| ai::fetch_all());
+        }
         self.relist();
         self.picked = 0;
     }
@@ -127,6 +133,12 @@ impl State {
             aliases: &self.config.aliases, now: &clock,
         };
         self.results = match self.mode {
+            Mode::Root if ai::asked_for(&self.query.text) => {
+                // The limits stick to the top, each titled with its provider since there are no headings.
+                let limits = ai::items(&self.ai, now as i64).into_iter()
+                    .map(|(provider, it)| Item { title: format!("{provider} · {}", it.title), icon: self.app_icon(provider), ..it });
+                limits.chain(catalog::search(&self.items, &self.query.text, &ctx)).collect()
+            }
             Mode::Root => catalog::search(&self.items, &self.query.text, &ctx),
             Mode::Clipboard => self.history.search(&self.query.text).into_iter().map(|t| clip_item(t)).collect(),
             Mode::Files => self.files.clone(),
@@ -156,7 +168,10 @@ impl State {
     fn enter(&mut self, mode: Mode) {
         self.mode = mode;
         self.query.replace_text("");
-        if mode == Mode::AiUsage && let Some(fetch) = &self.ai_fetch {
+        if mode == Mode::Root {
+            // So the next "ai usage" reads fresh limits.
+            self.ai.clear();
+        } else if mode == Mode::AiUsage && let Some(fetch) = &self.ai_fetch {
             self.ai.clear();
             fetch.request((), |_| ai::fetch_all());
         }
@@ -569,6 +584,11 @@ const SCENES: &[(&str, fn(&mut State))] = &[
     ("timezone", |s| scene(s, Mode::Root, "3pm pst in manila")),
     ("alias", |s| scene(s, Mode::Root, "vs")),
     ("system", |s| scene(s, Mode::Root, "volume")),
+    ("ai-search", |s| {
+        scene(s, Mode::Root, "ai usage");
+        s.ai = ai::demo(usage::now() as i64);
+        s.relist();
+    }),
     ("ai-usage", |s| {
         scene(s, Mode::AiUsage, "");
         s.ai = ai::demo(usage::now() as i64);

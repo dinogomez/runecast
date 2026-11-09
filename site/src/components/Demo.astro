@@ -16,7 +16,7 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     <div class="panel" aria-hidden="true">
       <div class="search">
         <svg class="glass" viewBox="0 0 16 16"><circle cx="9.5" cy="6.5" r="4" /><path d="M6.6 9.4 3 13" /></svg>
-        <span class="chip" hidden></span><span class="query"></span><span class="caret"></span><span class="placeholder">Search for apps and commands…</span>
+        <span class="query"></span><span class="caret"></span><span class="placeholder">Search for apps and commands…</span>
       </div>
       <ul class="rows"></ul>
       <div class="bar">
@@ -24,7 +24,7 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
         <span class="brand">Runecast</span>
         <span class="action"></span><kbd class="enter">↩</kbd>
         <span class="sep"></span>
-        <span class="close"></span><kbd>esc</kbd>
+        <span class="close">Close</span><kbd>esc</kbd>
       </div>
     </div>
   </div>
@@ -41,9 +41,7 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     kind?: string;
     left?: number; // percent of a limit left, drawn as a meter instead of the kind
   };
-  // A view that ↩ opens, like AI Usage: a chip in the search field and rows under headings.
-  type View = { chip: string; placeholder: string; action: string; sections: [string, Row[]][] };
-  type Scene = { caption: string; query: string; showAt?: number; action: string; rows: Row[]; opens?: View };
+  type Scene = { caption: string; query: string; showAt?: number; action: string; rows: Row[] };
 
   // The app's symbol for each kind of row (src/icons.rs): a Lucide icon, white on a tile of one of
   // the theme's accent hues.
@@ -83,27 +81,21 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
   const appRow = (name: string) => apps.find((row) => row.title === name)!;
 
   const demo = document.querySelector<HTMLElement>(".demo")!;
-  // The AI Usage view's sample limits, the same ones the app's own demo scene shows.
-  const usage = (provider: string, icon: string, limits: [string, string, number][]): [string, Row[]] => [
-    provider,
-    limits.map(([title, subtitle, left]) => ({ icon: `img:${icon}`, title, subtitle, left })),
+  // The limits typing "ai usage" pins above the other rows, titled with their provider, as the
+  // app's own demo readings show them.
+  const limit = (provider: string, title: string, subtitle: string, left: number): Row => ({
+    icon: `img:${provider === "Claude" ? demo.dataset.claude : demo.dataset.chatgpt}`,
+    title: `${provider} · ${title}`,
+    subtitle,
+    left,
+  });
+  const limits: Row[] = [
+    limit("Claude", "5-hour session", "resets in 2h 14m", 62),
+    limit("Claude", "Weekly", "resets in 3d 5h", 39),
+    limit("Claude", "Weekly Opus", "resets in 3d 5h", 12),
+    limit("ChatGPT", "5-hour session", "resets in 4h 2m", 88),
+    limit("ChatGPT", "Weekly", "resets in 5d 9h", 73),
   ];
-  const aiUsage: View = {
-    chip: "AI Usage",
-    placeholder: "Filter AI usage…",
-    action: "Open Usage Page",
-    sections: [
-      usage("Claude", demo.dataset.claude!, [
-        ["5-hour session", "resets in 2h 14m", 62],
-        ["Weekly", "resets in 3d 5h", 39],
-        ["Weekly Opus", "resets in 3d 5h", 12],
-      ]),
-      usage("ChatGPT", demo.dataset.chatgpt!, [
-        ["5-hour session", "resets in 4h 2m", 88],
-        ["Weekly", "resets in 5d 9h", 73],
-      ]),
-    ],
-  };
 
   const scenes: Scene[] = [
     {
@@ -122,6 +114,13 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
         { icon: file, title: "report-draft.docx", subtitle: "~/Desktop", kind: "File" },
         { icon: file, title: "report.md", subtitle: "~/Projects/runecast/docs", kind: "File" },
       ],
+    },
+    {
+      caption: "See your Claude and ChatGPT limits as you type",
+      query: "ai usage",
+      showAt: 2,
+      action: "Open Usage Page",
+      rows: [...limits, { icon: gear, title: "AI Usage", subtitle: "Claude and ChatGPT plan limits left", kind: "Command" }],
     },
     {
       caption: "Snap windows into place",
@@ -183,14 +182,6 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
       action: "Run Command",
       rows: [{ icon: gear, title: "Toggle Dark Mode", subtitle: "System", kind: "Command" }],
     },
-    {
-      caption: "Check your Claude and ChatGPT limits",
-      query: "ai usage",
-      showAt: 2,
-      action: "Run Command",
-      rows: [{ icon: gear, title: "AI Usage", subtitle: "Claude and ChatGPT plan limits left", kind: "Command" }],
-      opens: aiUsage,
-    },
   ];
 
   // Every letter of the query, in order, somewhere in the name.
@@ -204,14 +195,11 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
   const KEY = 85; // per keystroke
   const HOLD = 1700; // result on screen before ↩
   const PRESS = 450; // ↩ flash, then the next scene
-  const OPEN = 3200; // a view that ↩ opened stays this long
 
   const stage = demo.querySelector<HTMLElement>(".stage")!;
   const panel = demo.querySelector<HTMLElement>(".panel")!;
   const query = panel.querySelector(".query")!;
   const placeholder = panel.querySelector<HTMLElement>(".placeholder")!;
-  const chip = panel.querySelector<HTMLElement>(".chip")!;
-  const close = panel.querySelector(".close")!;
   const rows = panel.querySelector(".rows")!;
   const action = panel.querySelector(".action")!;
   const enter = panel.querySelector(".enter")!;
@@ -240,30 +228,7 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     }<span class="spacer"></span>${end}</li>`;
   }
 
-  function setView(view?: View) {
-    chip.hidden = !view;
-    chip.textContent = view?.chip ?? "";
-    placeholder.textContent = view?.placeholder ?? "Search for apps and commands…";
-    close.textContent = view ? "Back" : "Close";
-  }
-
-  function open(view: View) {
-    setView(view);
-    query.textContent = "";
-    placeholder.hidden = false;
-    let first = true;
-    rows.innerHTML = view.sections
-      .map(([heading, list]) => `<li class="heading">${heading}</li>${list.map((row) => {
-        const html = rowHtml(row, first);
-        first = false;
-        return html;
-      }).join("")}`)
-      .join("");
-    action.textContent = view.action;
-  }
-
   function render(scene: Scene, typed: string) {
-    setView();
     query.textContent = typed;
     placeholder.hidden = typed.length > 0;
     const found = typed.length >= (scene.showAt ?? scene.query.length);
@@ -304,15 +269,14 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     });
 
     if (reduced) {
-      if (scene.opens) open(scene.opens);
-      else render(scene, scene.query);
+      render(scene, scene.query);
       segments[current].classList.add("active");
       return;
     }
 
     // The segment fills over exactly the scene's length, like a video timeline.
     const lead = current === 0 ? LEAD * 2.5 : LEAD;
-    let length = lead + HOLD + PRESS + (scene.opens ? OPEN : 0);
+    let length = lead + HOLD + PRESS;
     for (let n = 1; n <= scene.query.length; n++) length += keyDelay(scene.query, n);
     const bar = segments[current].querySelector("span")!;
     bar.style.animationDuration = `${length}ms`;
@@ -333,11 +297,6 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     await wait(PRESS);
     panel.classList.remove("pressed");
     enter.classList.remove("down");
-    if (id !== run) return;
-    if (scene.opens) {
-      open(scene.opens);
-      await wait(OPEN);
-    }
     if (id === run) play(current + 1);
   }
 
@@ -367,7 +326,6 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     --p-press: 1.35;
     --p-control: #303033;
     --p-control-on: #3a4f6a;
-    --p-chip: #23344b;
     --p-rowkey: #2b2c2f;
     --p-key: #2b2c2f;
     --p-key-down: #4a4c51;
@@ -413,7 +371,6 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     --p-press: 0.94;
     --p-control: #c7c7c8;
     --p-control-on: #adb7c4;
-    --p-chip: #d5e5f9;
     --p-rowkey: #c7c7c8;
     --p-key: #c1c2c3;
     --p-key-down: #a5a7aa;
@@ -534,26 +491,7 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     text-overflow: ellipsis;
   }
 
-  .chip {
-    margin-right: 14px;
-    padding: 3px 10px;
-    border-radius: 7px;
-    background: var(--p-chip);
-    font-size: 15px;
-    font-weight: 500;
-  }
 
-  .rows :global(li.heading) {
-    height: 34px;
-    padding-top: 4px;
-    color: var(--p-muted);
-    font-size: 13px;
-    font-weight: 600;
-  }
-
-  .rows :global(li.heading ~ li.heading) {
-    margin-top: 10px;
-  }
 
   .rows :global(.meter) {
     width: 120px;
