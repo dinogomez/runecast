@@ -17,6 +17,7 @@ mod convert;
 mod files;
 mod fuzzy;
 mod hotkeys;
+mod icons;
 mod login;
 mod menubar;
 mod settings;
@@ -446,7 +447,7 @@ fn preview(item: Option<&Item>, t: &tok::Theme) -> El {
 fn result_row(item: &Item, icon: Option<&Image>, on: bool, compact: bool, dark: bool, accent: Color, t: &tok::Theme) -> El {
     let leading = match icon {
         Some(img) if img.error().is_none() => el().size(ICON, ICON).pixels(img.pixels()),
-        _ => badge(item, dark, t),
+        _ => badge(item, dark),
     };
     let title_style = if item.kind == Kind::Calculator { TextStyle::new(15.0, 600.0) } else { TextStyle::new(14.0, 500.0) };
     let mut r = row().h(ROW_H).px(10.0).gap(12.0).radius(9.0).center_y()
@@ -470,27 +471,16 @@ fn result_row(item: &Item, icon: Option<&Image>, on: bool, compact: bool, dark: 
     r.child(text(item.kind.label()).font(type_::LABEL).color(t.text_secondary))
 }
 
-/// The fallback when there's no icon: the app's initial on a colour picked from its name, or the
-/// row's kind.
-fn badge(item: &Item, dark: bool, t: &tok::Theme) -> El {
-    let glyph = match item.kind {
-        Kind::Calculator => "=".to_string(),
-        Kind::Web => "⌕".to_string(),
-        Kind::Command => "⚙".to_string(),
-        Kind::Snippet => "¶".to_string(),
-        Kind::Quicklink => "↗".to_string(),
-        Kind::Window => "◧".to_string(),
-        Kind::Clip => "T".to_string(),
-        Kind::File => "≡".to_string(),
-        Kind::Usage => "◔".to_string(),
-        Kind::App => item.title.chars().find(|c| c.is_alphanumeric()).unwrap_or('•').to_uppercase().to_string(),
-    };
+/// The fallback when there's no icon: the row's kind as a white symbol on a coloured tile, or an
+/// app's initial on a colour picked from its name.
+fn badge(item: &Item, dark: bool) -> El {
+    let tile = row().size(ICON, ICON).radius(7.0).center();
+    if let Some((symbol, hue)) = icons::for_kind(item.kind) {
+        return tile.fill(tok::accent(hue, dark)).child(rune::icon(symbol, 16.0).color(Color::WHITE));
+    }
+    let initial = item.title.chars().find(|c| c.is_alphanumeric()).unwrap_or('•').to_uppercase().to_string();
     let hue = item.title.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
-    let (fill, ink) = match item.kind {
-        Kind::App => (tok::accent(hue % 6, dark), Color::WHITE),
-        _ => (t.control_off, t.text),
-    };
-    row().size(ICON, ICON).radius(7.0).center().fill(fill).child(text(glyph).font(type_::TITLE).color(ink))
+    tile.fill(tok::accent(hue % 6, dark)).child(text(initial).font(type_::TITLE).color(Color::WHITE))
 }
 
 /// The logo at `size` points, or a plain square of `fallback` until it decodes.
