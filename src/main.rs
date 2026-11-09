@@ -17,6 +17,7 @@ mod convert;
 mod files;
 mod fuzzy;
 mod hotkeys;
+mod icons;
 mod login;
 mod menubar;
 mod settings;
@@ -113,6 +114,12 @@ impl State {
                 self.files.clear();
             }
         }
+        // Typing "ai usage" fetches the limits once per opening, to pin them above the other rows.
+        if self.mode == Mode::Root && ai::asked_for(&self.query.text) && self.ai.is_empty()
+            && let Some(fetch) = &self.ai_fetch && !fetch.is_pending()
+        {
+            fetch.request((), |_| ai::fetch_all());
+        }
         self.relist();
         self.picked = 0;
     }
@@ -125,7 +132,17 @@ impl State {
             engine: self.config.engine(), boost: &boost, files: &self.files, rates: &self.rates,
             aliases: &self.config.aliases, now: &clock,
         };
+        // A row the user moved to stays picked when rows land above it (usage limits, file matches),
+        // so ↩ still runs what they chose. Row 0 stays on top: that's where answers belong.
+        let chosen = (self.picked > 0).then(|| self.results.get(self.picked))
+            .flatten().map(|it| (it.title.clone(), it.subtitle.clone(), it.kind));
         self.results = match self.mode {
+            Mode::Root if ai::asked_for(&self.query.text) => {
+                // The limits stick to the top, each titled with its provider since there are no headings.
+                let limits = ai::items(&self.ai, now as i64).into_iter()
+                    .map(|(provider, it)| Item { title: format!("{provider} · {}", it.title), icon: self.app_icon(provider), ..it });
+                limits.chain(catalog::search(&self.items, &self.query.text, &ctx)).collect()
+            }
             Mode::Root => catalog::search(&self.items, &self.query.text, &ctx),
             Mode::Clipboard => self.history.search(&self.query.text).into_iter().map(|t| clip_item(t)).collect(),
             Mode::Files => self.files.clone(),
@@ -137,7 +154,8 @@ impl State {
                     .map(|(provider, it)| Item { icon: self.app_icon(provider), ..it }).collect()
             }
         };
-        self.picked = self.picked.min(self.results.len().saturating_sub(1));
+        let same = |it: &Item| chosen.as_ref().is_some_and(|(t, s, k)| it.title == *t && it.subtitle == *s && it.kind == *k);
+        self.picked = self.results.iter().position(same).unwrap_or(self.picked.min(self.results.len().saturating_sub(1)));
         self.load_icons();
     }
 
@@ -155,7 +173,10 @@ impl State {
     fn enter(&mut self, mode: Mode) {
         self.mode = mode;
         self.query.replace_text("");
-        if mode == Mode::AiUsage && let Some(fetch) = &self.ai_fetch {
+        if mode == Mode::Root {
+            // So the next "ai usage" reads fresh limits.
+            self.ai.clear();
+        } else if mode == Mode::AiUsage && let Some(fetch) = &self.ai_fetch {
             self.ai.clear();
             fetch.request((), |_| ai::fetch_all());
         }
@@ -446,7 +467,7 @@ fn preview(item: Option<&Item>, t: &tok::Theme) -> El {
 fn result_row(item: &Item, icon: Option<&Image>, on: bool, compact: bool, dark: bool, accent: Color, t: &tok::Theme) -> El {
     let leading = match icon {
         Some(img) if img.error().is_none() => el().size(ICON, ICON).pixels(img.pixels()),
-        _ => badge(item, dark, t),
+        _ => badge(item, dark),
     };
     let title_style = if item.kind == Kind::Calculator { TextStyle::new(15.0, 600.0) } else { TextStyle::new(14.0, 500.0) };
     let mut r = row().h(ROW_H).px(10.0).gap(12.0).radius(9.0).center_y()
@@ -470,27 +491,16 @@ fn result_row(item: &Item, icon: Option<&Image>, on: bool, compact: bool, dark: 
     r.child(text(item.kind.label()).font(type_::LABEL).color(t.text_secondary))
 }
 
-/// The fallback when there's no icon: the app's initial on a colour picked from its name, or the
-/// row's kind.
-fn badge(item: &Item, dark: bool, t: &tok::Theme) -> El {
-    let glyph = match item.kind {
-        Kind::Calculator => "=".to_string(),
-        Kind::Web => "⌕".to_string(),
-        Kind::Command => "⚙".to_string(),
-        Kind::Snippet => "¶".to_string(),
-        Kind::Quicklink => "↗".to_string(),
-        Kind::Window => "◧".to_string(),
-        Kind::Clip => "T".to_string(),
-        Kind::File => "≡".to_string(),
-        Kind::Usage => "◔".to_string(),
-        Kind::App => item.title.chars().find(|c| c.is_alphanumeric()).unwrap_or('•').to_uppercase().to_string(),
-    };
+/// The fallback when there's no icon: the row's kind as a white symbol on a coloured tile, or an
+/// app's initial on a colour picked from its name.
+fn badge(item: &Item, dark: bool) -> El {
+    let tile = row().size(ICON, ICON).radius(7.0).center();
+    if let Some((symbol, hue)) = icons::for_kind(item.kind) {
+        return tile.fill(tok::accent(hue, dark)).child(rune::icon(symbol, 16.0).color(Color::WHITE));
+    }
+    let initial = item.title.chars().find(|c| c.is_alphanumeric()).unwrap_or('•').to_uppercase().to_string();
     let hue = item.title.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
-    let (fill, ink) = match item.kind {
-        Kind::App => (tok::accent(hue % 6, dark), Color::WHITE),
-        _ => (t.control_off, t.text),
-    };
-    row().size(ICON, ICON).radius(7.0).center().fill(fill).child(text(glyph).font(type_::TITLE).color(ink))
+    tile.fill(tok::accent(hue % 6, dark)).child(text(initial).font(type_::TITLE).color(Color::WHITE))
 }
 
 /// The logo at `size` points, or a plain square of `fallback` until it decodes.
@@ -579,6 +589,11 @@ const SCENES: &[(&str, fn(&mut State))] = &[
     ("timezone", |s| scene(s, Mode::Root, "3pm pst in manila")),
     ("alias", |s| scene(s, Mode::Root, "vs")),
     ("system", |s| scene(s, Mode::Root, "volume")),
+    ("ai-search", |s| {
+        scene(s, Mode::Root, "ai usage");
+        s.ai = ai::demo(usage::now() as i64);
+        s.relist();
+    }),
     ("ai-usage", |s| {
         scene(s, Mode::AiUsage, "");
         s.ai = ai::demo(usage::now() as i64);
@@ -646,4 +661,27 @@ fn main() {
         ];
         windows
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_landing_above_keep_the_users_pick() {
+        let mut s = State::new(config::example(), demo_items(), demo_history());
+        s.query.replace_text("ai usage");
+        s.refresh();
+        // The user moves down to the web search before the limits arrive.
+        s.picked = s.results.iter().position(|it| it.kind == Kind::Web).unwrap();
+        assert!(s.picked > 0);
+        s.ai = ai::demo(0);
+        s.relist();
+        assert_eq!(s.results[0].title, "Claude · 5-hour session");
+        assert_eq!(s.results[s.picked].kind, Kind::Web);
+        // A fresh query starts at the top again.
+        s.query.replace_text("ai usag");
+        s.refresh();
+        assert_eq!(s.picked, 0);
+    }
 }

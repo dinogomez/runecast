@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [dev, main]
+    paths-ignore: ["site/**"]
   pull_request:
+    paths-ignore: ["site/**"]
 
 concurrency:
   group: ci-${{ github.ref }}

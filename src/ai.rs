@@ -70,6 +70,13 @@ pub fn items(reports: &[Report], now: i64) -> Vec<(&'static str, Item)> {
     out
 }
 
+/// Whether a root query asks for usage, so the panel pins the limits above its other rows: a start
+/// of "ai usage" (two letters or more) or of "usage" (three or more).
+pub fn asked_for(query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    (q.len() >= 2 && "ai usage".starts_with(&q)) || (q.len() >= 3 && "usage".starts_with(&q))
+}
+
 impl Window {
     /// Percent of the window left, 0–100.
     pub fn left(&self) -> f64 {
@@ -262,5 +269,15 @@ mod tests {
         ]);
         assert_eq!(span(2 * 3600 + 14 * 60), "2h 14m");
         assert_eq!(span(30), "1m");
+    }
+
+    #[test]
+    fn only_a_start_of_ai_usage_or_usage_asks_for_it() {
+        for q in ["ai", "AI Us", " ai usage ", "usa", "usage"] {
+            assert!(asked_for(q), "{q:?}");
+        }
+        for q in ["a", "us", "aiu", "ai usage now", "music"] {
+            assert!(!asked_for(q), "{q:?}");
+        }
     }
 }

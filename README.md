@@ -78,7 +78,7 @@ Settings (search engine, appearance, hotkeys, snippets, quicklinks, aliases) are
 
 Clipboard history is stored in the same folder and includes everything you copy. You can turn it off in Settings.
 
-AI Usage reads the sign-in that Claude Code (`~/.claude`, or the Keychain on macOS) and Codex (`~/.codex/auth.json`) already saved, so sign in to those CLIs first. The usage endpoints it calls aren't documented and may change.
+AI Usage reads the sign-in that Claude Code (`~/.claude`, or the Keychain on macOS) and Codex (`~/.codex/auth.json`) already saved, so sign in to those CLIs first. Typing `ai usage` (or just `ai`) in the panel pins the limits above the other results, without opening the command. The usage endpoints it calls aren't documented and may change.
 
 ## Check out Raycast
 
