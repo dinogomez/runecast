@@ -62,7 +62,11 @@ Hand edits work too and apply the next time the panel opens; "Open config.json" 
 
 Clipboard history is saved beside it in `clipboard.json`, readable only by you. It records every text you copy, passwords included, so clear the file if that matters to you.
 
-## Run
+## Download
+
+Get the latest `.dmg` (macOS) or `.tar.gz` (Linux) from [Releases](https://github.com/dinogomez/runecast/releases). The release notes say how to install it, including how to open an app macOS can't verify yet.
+
+## Run from source
 
 Requires Rust (the toolchain is pinned in `rust-toolchain.toml`).
 
