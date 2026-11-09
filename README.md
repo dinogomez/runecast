@@ -16,6 +16,7 @@ Press **⌥Space** (Alt+Space on Linux) from anywhere, type a few letters, hit *
 - **Inline calculator.** Type `(1200+340)*1.12` and the answer is the first row; ↩ copies it.
 - **System commands.** Lock Screen, Sleep, Empty Trash, Toggle Dark Mode, Open Downloads.
 - **Web search fallback.** The last row always searches Google for what you typed.
+- **Settings window.** ⌘, in the panel (Ctrl+, on Linux), or the Runecast Settings command. Record any hotkey again, pick a search engine and appearance, turn clipboard history on or off, launch at login, and edit snippets and quicklinks.
 - **Keyboard first.** ↑/↓ to move, ↩ to run, esc clears the query, then goes back or closes.
 
 | Clipboard history | Window management |
@@ -26,17 +27,29 @@ Press **⌥Space** (Alt+Space on Linux) from anywhere, type a few letters, hit *
 | **Calculator** | **Commands** |
 | ![Calculator](docs/calc.png) | ![Commands](docs/commands.png) |
 
-## Snippets and quicklinks
+## Settings
 
-They live in `config.json`, which the first run writes with examples:
+| General | Hotkeys |
+|---|---|
+| ![General settings](docs/settings-general.png) | ![Hotkey settings](docs/settings-hotkeys.png) |
+| **Snippets** | **Quicklinks** |
+| ![Snippet settings](docs/settings-snippets.png) | ![Quicklink settings](docs/settings-quicklinks.png) |
+
+- **General:** appearance (system, light or dark), search engine (Google, DuckDuckGo, Bing, Kagi, Perplexity), launch at login, clipboard history on or off, history size, and Clear History.
+- **Hotkeys:** click a shortcut and press a new one; it's rebound immediately, and the old one keeps working if the new one is taken. Backspace turns a hotkey off. Every window layout can have one, not just the four with defaults.
+- **Snippets and Quicklinks:** add, rename, edit and delete. Changes save as you type.
+
+Everything is saved in `config.json`, which the first run writes with defaults:
 
 - macOS: `~/Library/Application Support/Runecast/config.json`
 - Linux: `~/.config/runecast/config.json`
 
-The "Edit Snippets and Quicklinks" command opens it. Changes apply the next time the panel opens.
+Hand edits work too and apply the next time the panel opens; "Open config.json" in Settings opens it.
 
 ```json
 {
+  "general": { "appearance": "system", "search_engine": "DuckDuckGo", "clipboard_history": true, "clipboard_size": 200 },
+  "hotkeys": { "launcher": "alt+space", "clipboard": "ctrl+alt+v", "window.left-half": "ctrl+alt+left" },
   "snippets": [
     { "name": "Email Signature", "text": "Best,\nDino" }
   ],
@@ -71,16 +84,20 @@ Rune apps can render without a window, which is how the screenshots above were m
 target/release/runecast --list-scenes
 target/release/runecast --snap docs/clipboard.png --scene clipboard --scale 2 --theme dark
 target/release/runecast --snap icons.png --scene installed     # this machine's apps and icons
+target/release/runecast --window settings --snap docs/settings-hotkeys.png --scene hotkeys --scale 2 --theme dark
 target/release/runecast --tree tree.json --scene calc           # dump the element tree
 ```
 
 ## Layout
 
-- `src/main.rs`: the window, hotkeys and view
+- `src/main.rs`: the launcher window and view
+- `src/settings.rs`: the Settings window
+- `src/hotkeys.rs`: global hotkeys and their registration
 - `src/catalog.rs`: apps, commands, snippets, quicklinks, web search and how each runs
 - `src/clipboard.rs`: clipboard watcher and history
 - `src/wm.rs`: window layouts
 - `src/config.rs`: `config.json`
+- `src/login.rs`: launch at login
 - `src/fuzzy.rs`: fuzzy ranking
 - `src/calc.rs`: the calculator
 
@@ -88,7 +105,6 @@ target/release/runecast --tree tree.json --scene calc           # dump the eleme
 
 - Snippet keywords that expand as you type in any app
 - Image entries in clipboard history
-- Configurable hotkeys
 - Extensions
 
 Rune is pre-release, so Runecast pins a commit of Rune's `dev` branch.

@@ -2593,6 +2593,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rune-kit"
+version = "0.0.1"
+source = "git+https://github.com/anomalyco/rune?rev=d751f07106eac47bdd4e33756dee71e1f593c9e2#d751f07106eac47bdd4e33756dee71e1f593c9e2"
+dependencies = [
+ "rune",
+ "rune-motion",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "rune-motion"
 version = "0.1.0"
 source = "git+https://github.com/anomalyco/rune?rev=d751f07106eac47bdd4e33756dee71e1f593c9e2#d751f07106eac47bdd4e33756dee71e1f593c9e2"
@@ -2619,6 +2629,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "rune",
+ "rune-kit",
  "serde",
  "serde_json",
 ]

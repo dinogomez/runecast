@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use rune::AppHandle;
 
-pub const MAX_ENTRIES: usize = 200;
 /// Longer copies (a whole log file, say) aren't kept.
 const MAX_CHARS: usize = 100_000;
 
@@ -20,15 +19,15 @@ impl History {
         History { entries }
     }
 
-    /// Puts `text` first. A copy already in the history moves to the top instead of repeating.
-    /// Returns whether anything changed.
-    pub fn push(&mut self, text: String) -> bool {
+    /// Puts `text` first, keeping at most `max` entries. A copy already in the history moves to
+    /// the top instead of repeating. Returns whether anything changed.
+    pub fn push(&mut self, text: String, max: usize) -> bool {
         if text.trim().is_empty() || text.chars().count() > MAX_CHARS || self.entries.first() == Some(&text) {
             return false;
         }
         self.entries.retain(|e| *e != text);
         self.entries.insert(0, text);
-        self.entries.truncate(MAX_ENTRIES);
+        self.entries.truncate(max);
         true
     }
 
@@ -83,21 +82,21 @@ mod tests {
     fn a_repeated_copy_moves_to_the_top_without_duplicating() {
         let mut h = History::default();
         for t in ["a", "b", "c"] {
-            h.push(t.into());
+            h.push(t.into(), 10);
         }
-        assert!(h.push("a".into()));
+        assert!(h.push("a".into(), 10));
         assert_eq!(h.entries, ["a", "c", "b"]);
-        assert!(!h.push("a".into()), "copying the top entry again changes nothing");
-        assert!(!h.push("  \n".into()), "blank copies aren't kept");
+        assert!(!h.push("a".into(), 10), "copying the top entry again changes nothing");
+        assert!(!h.push("  \n".into(), 10), "blank copies aren't kept");
     }
 
     #[test]
     fn history_is_capped_dropping_the_oldest() {
         let mut h = History::default();
-        for i in 0..super::MAX_ENTRIES + 5 {
-            h.push(i.to_string());
+        for i in 0..55 {
+            h.push(i.to_string(), 50);
         }
-        assert_eq!(h.entries.len(), super::MAX_ENTRIES);
+        assert_eq!(h.entries.len(), 50);
         assert_eq!(h.entries.last().unwrap(), "5");
     }
 }

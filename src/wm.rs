@@ -2,7 +2,7 @@
 //! it's on (the visible frame, so the menu bar and Dock stay clear) through System Events.
 //! Needs Accessibility permission for Runecast.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Layout {
     LeftHalf,
     RightHalf,
@@ -36,17 +36,6 @@ impl Layout {
             Layout::RightTwoThirds => "Right Two Thirds",
             Layout::Maximize => "Maximize",
             Layout::Center => "Center",
-        }
-    }
-
-    /// The global shortcut, if it has one.
-    pub fn hotkey(self) -> Option<&'static str> {
-        match self {
-            Layout::LeftHalf => Some("⌃⌥←"),
-            Layout::RightHalf => Some("⌃⌥→"),
-            Layout::Maximize => Some("⌃⌥↩"),
-            Layout::Center => Some("⌃⌥C"),
-            _ => None,
         }
     }
 

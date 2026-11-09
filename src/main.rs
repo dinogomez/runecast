@@ -2,32 +2,37 @@
 //!
 //! `cargo run --release` starts it in the background; ⌥Space (Alt+Space elsewhere) shows the panel.
 //! Type to search apps, commands, snippets and quicklinks, do arithmetic inline, or fall through to
-//! a web search. ⌃⌥V opens clipboard history; ⌃⌥←/→/↩/C move the front window on macOS.
+//! a web search. ⌃⌥V opens clipboard history; ⌃⌥←/→/↩/C move the front window on macOS. ⌘, in the
+//! panel opens Settings, where every hotkey can be recorded again.
 //!
-//! Headless, with no window: `runecast --snap out.png --scene apps` renders a scene to PNG.
+//! Headless, with no window: `runecast --snap out.png --scene apps` renders a scene to PNG, and
+//! `runecast --window settings --snap out.png --scene hotkeys` renders the Settings window.
 
 mod calc;
 mod catalog;
 mod clipboard;
 mod config;
 mod fuzzy;
+mod hotkeys;
+mod login;
+mod settings;
 mod wm;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use catalog::{Action, Item, Kind};
 use clipboard::History;
+use config::Config;
+use hotkeys::{Hotkey, Registry};
+use settings::Settings;
 use rune::tok::{self, type_};
 use rune::{
     Align, App, AppHandle, AppSpec, Color, Cx, DisplayTarget, El, Image, ImageCache, Key, KeyEvent, OverlayPlacement,
     ScreenEdge, ScrollSpec, TextEdit, TextStyle, Tx, Waker, WindowOptions, WindowSpec, col, el, row, spacer, text,
     text_input,
 };
-use wm::Layout;
-
-const HOTKEY: &str = "alt+space";
-const CLIPBOARD_HOTKEY: &str = "ctrl+alt+v";
 const WIDTH: f32 = 760.0;
 const SEARCH_H: f32 = 60.0;
 const ROW_H: f32 = 44.0;
@@ -45,6 +50,7 @@ enum Mode {
 struct State {
     mode: Mode,
     query: TextEdit,
+    config: Config,
     items: Vec<Item>,
     history: History,
     results: Vec<Item>,
@@ -55,15 +61,17 @@ struct State {
     icon_handles: HashMap<PathBuf, Image>,
     watching: bool,
     me: Option<AppHandle<State>>,
+    registry: Option<Arc<Mutex<Registry>>>,
+    settings: Option<AppHandle<Settings>>,
 }
 
 impl State {
-    fn new(items: Vec<Item>, history: History, me: Option<AppHandle<State>>) -> Self {
+    fn new(config: Config, items: Vec<Item>, history: History) -> Self {
         let mut query = TextEdit::new("");
         query.focused = true;
         let mut s = State {
-            mode: Mode::Root, query, items, history, results: Vec::new(), picked: 0,
-            icons: None, icon_handles: HashMap::new(), watching: false, me,
+            mode: Mode::Root, query, config, items, history, results: Vec::new(), picked: 0,
+            icons: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None,
         };
         s.refresh();
         s
@@ -71,7 +79,7 @@ impl State {
 
     fn refresh(&mut self) {
         self.results = match self.mode {
-            Mode::Root => catalog::search(&self.items, &self.query.text),
+            Mode::Root => catalog::search(&self.items, &self.query.text, self.config.engine()),
             Mode::Clipboard => self.history.search(&self.query.text).into_iter().map(|t| clip_item(t)).collect(),
         };
         self.picked = 0;
@@ -99,12 +107,40 @@ impl State {
     /// Shows the panel in `mode`, with apps and the config read again so changes appear.
     fn open(&mut self, mode: Mode) {
         let Some(me) = self.me.clone() else { return };
-        self.items = catalog::load(&config::load());
+        self.config = config::load();
+        self.items = catalog::load(&self.config);
         self.enter(mode);
         me.place(DisplayTarget::Primary, OverlayPlacement::Edge {
             edge: ScreenEdge::Top, margin: 180.0, align: Align::Center, inset: 0.0,
         });
         me.show();
+    }
+
+    /// What a global hotkey does.
+    fn fire(&mut self, hotkey: Hotkey) {
+        match hotkey {
+            Hotkey::Launcher => match &self.me {
+                Some(me) if me.is_visible() && self.mode == Mode::Root => me.close(),
+                _ => self.open(Mode::Root),
+            },
+            Hotkey::Clipboard => self.open(Mode::Clipboard),
+            Hotkey::Window(layout) => wm::apply(layout),
+        }
+    }
+
+    /// Takes the config the Settings window just saved.
+    fn apply_config(&mut self, config: Config) {
+        self.history.entries.truncate(config.general.clipboard_size);
+        self.config = config;
+    }
+
+    fn open_settings(&mut self, tx: &mut Tx) {
+        self.reset();
+        tx.close_window();
+        if let Some(settings) = &self.settings {
+            settings.update(|s, _| s.reload());
+            settings.open();
+        }
     }
 }
 
@@ -124,7 +160,7 @@ fn setup(s: &mut State, waker: Waker) {
     } else if let Some(me) = s.me.clone() && !s.watching {
         s.watching = true;
         clipboard::watch(me, |s: &mut State, text| {
-            if s.history.push(text) {
+            if s.config.general.clipboard_history && s.history.push(text, s.config.general.clipboard_size) {
                 s.history.save();
                 if s.mode == Mode::Clipboard {
                     s.refresh();
@@ -154,6 +190,7 @@ fn run_picked(s: &mut State, tx: &mut Tx) {
         }
         Action::Window(layout) => wm::apply(layout),
         Action::ClipboardHistory => return s.enter(Mode::Clipboard),
+        Action::Settings => return s.open_settings(tx),
         Action::Quit => return tx.quit(),
         action => catalog::spawn(&action),
     }
@@ -172,6 +209,10 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         Key::Escape | Key::Backspace if s.mode != Mode::Root && s.query.text.is_empty() => s.reset(),
         Key::Escape => tx.close_window(),
+        _ if ev.is_command(',') => {
+            s.open_settings(tx);
+            return true;
+        }
         _ => return false,
     }
     tx.scroll_into_view(format!("row-{}", s.picked));
@@ -179,7 +220,7 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 fn view(s: &State, cx: &mut Cx<State>) -> El {
-    let dark = cx.system_dark();
+    let dark = s.config.general.appearance.dark(cx.system_dark());
     let t = tok::theme(dark);
     let accent = tok::accent(0, dark);
 
@@ -280,8 +321,8 @@ fn result_row(item: &Item, icon: Option<&Image>, on: bool, compact: bool, dark: 
     }
     r = r.child(text(item.title.clone()).font(title_style).color(t.text).truncate())
         .child(text(item.subtitle.clone()).font(type_::BODY).color(t.text_secondary).truncate().grow(1.0));
-    if let Some(hotkey) = item.hotkey {
-        r = r.child(keycap(hotkey, t));
+    if let Some(hotkey) = &item.hotkey {
+        r = r.child(keycap(hotkey.clone(), t));
     }
     r.child(text(item.kind.label()).font(type_::LABEL).color(t.text_secondary))
 }
@@ -307,9 +348,9 @@ fn badge(item: &Item, dark: bool, t: &tok::Theme) -> El {
     row().size(ICON, ICON).radius(7.0).center().fill(fill).child(text(glyph).font(type_::TITLE).color(ink))
 }
 
-fn keycap(label: &'static str, t: &tok::Theme) -> El {
+fn keycap(label: impl Into<String>, t: &tok::Theme) -> El {
     row().h(20.0).px(6.0).radius(5.0).center().fill(t.control_off)
-        .child(text(label).font(type_::LABEL).color(t.text_secondary))
+        .child(text(label.into()).font(type_::LABEL).color(t.text_secondary))
 }
 
 /// A fixed catalog and history, so headless scenes render the same on every machine.
@@ -325,9 +366,10 @@ fn demo_items() -> Vec<Item> {
     for title in ["Lock Screen", "Sleep", "Toggle Dark Mode", "Empty Trash"] {
         items.push(Item::new(title, "System", Kind::Command, Action::Shell(String::new())));
     }
-    items.push(Item { hotkey: Some("⌃⌥V"), ..Item::new("Clipboard History", "Runecast", Kind::Command, Action::ClipboardHistory) });
-    items.extend(catalog::layouts());
-    items.extend(catalog::extras(&config::example()));
+    let config = config::example();
+    items.extend(catalog::commands(&config).into_iter().filter(|it| it.subtitle != "System"));
+    items.extend(catalog::layouts(&config));
+    items.extend(catalog::extras(&config));
     items
 }
 
@@ -339,13 +381,13 @@ fn demo_history() -> History {
         "fn score(query: &str, candidate: &str) -> Option<i32> {\n    let query: Vec<char> = query.chars().collect();\n    // every query character must appear in order\n    todo!()\n}",
         "https://github.com/anomalyco/rune",
     ] {
-        h.push(clip.into());
+        h.push(clip.into(), 200);
     }
     h
 }
 
 fn scene(s: &mut State, mode: Mode, query: &str) {
-    *s = State::new(demo_items(), demo_history(), None);
+    *s = State::new(config::example(), demo_items(), demo_history());
     s.mode = mode;
     s.query.replace_text(query);
     s.refresh();
@@ -353,7 +395,8 @@ fn scene(s: &mut State, mode: Mode, query: &str) {
 
 /// The machine's own apps, to check real icons headless.
 fn installed(s: &mut State) {
-    *s = State::new(catalog::load(&config::example()), History::default(), None);
+    let config = config::example();
+    *s = State::new(config.clone(), catalog::load(&config), History::default());
 }
 
 const SCENES: &[(&str, fn(&mut State))] = &[
@@ -380,28 +423,44 @@ fn main() {
             setup: Some(setup),
             ..AppSpec::new("Runecast", (WIDTH, HEIGHT), || unreachable!(), view)
         };
-        let app = App::new(spec).windowless().accessory();
-        let me = app.handle();
-        let mut app = app
-            .init(move || State::new(catalog::load(&config::load()), History::load(), Some(me)))
-            .global_shortcut(HOTKEY, |s, _| match &s.me {
-                Some(me) if me.is_visible() && s.mode == Mode::Root => me.close(),
-                _ => s.open(Mode::Root),
+        let launcher = App::new(spec).windowless().accessory();
+        let settings_spec = AppSpec {
+            scenes: settings::SCENES,
+            min_size: Some((640.0, 460.0)),
+            ..AppSpec::new("Runecast Settings", settings::SIZE, || unreachable!(), settings::view)
+        };
+        let settings = App::new(settings_spec).windowless().keep_running();
+        let (me, settings_handle) = (launcher.handle(), settings.handle());
+        let registry = Arc::new(Mutex::new(Registry::new(me.clone())));
+
+        let shared = registry.clone();
+        let launcher = launcher
+            .init(move || {
+                let config = config::load();
+                let mut s = State::new(config.clone(), catalog::load(&config), History::load());
+                s.me = Some(me);
+                s.registry = Some(shared);
+                s.settings = Some(settings_handle);
+                s
             })
-            .global_shortcut(CLIPBOARD_HOTKEY, |s, _| s.open(Mode::Clipboard))
             .on_focus(|s, focused, tx| if !focused {
                 s.reset();
                 tx.close_window();
             });
-        if cfg!(target_os = "macos") {
-            app = app
-                .global_shortcut("ctrl+alt+left", |_, _| wm::apply(Layout::LeftHalf))
-                .global_shortcut("ctrl+alt+right", |_, _| wm::apply(Layout::RightHalf))
-                .global_shortcut("ctrl+alt+enter", |_, _| wm::apply(Layout::Maximize))
-                .global_shortcut("ctrl+alt+c", |_, _| wm::apply(Layout::Center));
-        }
+        // Hotkeys bind once the app runs; Settings rebinds them through the same registry.
+        launcher.handle().update(|s, _| {
+            if let Some(registry) = &s.registry {
+                registry.lock().unwrap().register_all(&s.config);
+            }
+        });
+        let launcher_handle = launcher.handle();
+        let settings = settings.init(move || Settings::new(config::load(), Some(registry), Some(launcher_handle)));
+
         let options = WindowOptions::launcher_panel().macos(|native| native.corner_radius(14.0));
-        let windows: Vec<rune::AnyWindowSpec> = vec![WindowSpec::from_app("launcher", app).configured_options(options).into()];
+        let windows: Vec<rune::AnyWindowSpec> = vec![
+            WindowSpec::from_app("launcher", launcher).configured_options(options).into(),
+            WindowSpec::from_app("settings", settings).into(),
+        ];
         windows
     });
 }
