@@ -45,6 +45,8 @@ Anything else falls back to a web search.
 | ![Clipboard history](docs/clipboard.png) | ![Window management](docs/windows.png) |
 | **Calculator** | **Time zones** |
 | ![Calculator](docs/calc.png) | ![Time zones](docs/timezone.png) |
+| **AI usage** | |
+| ![AI usage](docs/ai-usage.png) | |
 
 ## Install
 
@@ -75,6 +77,8 @@ Settings (search engine, appearance, hotkeys, snippets, quicklinks, aliases) are
 - Linux: `~/.config/runecast/`
 
 Clipboard history is stored in the same folder and includes everything you copy. You can turn it off in Settings.
+
+AI Usage reads the sign-in that Claude Code (`~/.claude`, or the Keychain on macOS) and Codex (`~/.codex/auth.json`) already saved, so sign in to those CLIs first. The usage endpoints it calls aren't documented and may change.
 
 ## Check out Raycast
 
