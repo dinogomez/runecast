@@ -8,10 +8,10 @@ Requires Rust. `rustup` installs the toolchain pinned in `rust-toolchain.toml`.
 cargo run --release
 ```
 
-Runecast starts in the background with no Dock icon. Press ⌥Space to open it.
+Runecast starts in the background with no Dock icon. Press <kbd>⌥ Option</kbd> + <kbd>Space</kbd> to open it.
 
 - **macOS:** give Runecast (or the terminal you run it from) **Accessibility** permission in System Settings → Privacy & Security. Pasting and moving windows need it.
-- **Linux:** install `libxkbcommon-dev libwayland-dev` first (see Rune's README). Pasting uses `xdotool` or `wtype` if one is installed; otherwise ↩ only copies.
+- **Linux:** install `libxkbcommon-dev libwayland-dev` first (see Rune's README). Pasting uses `xdotool` or `wtype` if one is installed; otherwise <kbd>Return</kbd> only copies.
 
 Rune is pre-release, so `Cargo.toml` pins a commit of Rune's `dev` branch.
 

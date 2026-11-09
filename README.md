@@ -5,7 +5,7 @@
 <h1 align="center">Runecast</h1>
 
 <p align="center">
-  A fast, keyboard-first launcher for macOS and Linux, in the spirit of Raycast.<br>
+  A fast, keyboard-first launcher for macOS and Linux, inspired by <a href="https://www.raycast.com">Raycast</a>.<br>
   Built in Rust with <a href="https://github.com/anomalyco/rune">Rune</a>.
 </p>
 
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  Press <b>⌥Space</b> (Alt+Space on Linux), type a few letters, hit <b>↩</b>.
+  Press <kbd>⌥ Option</kbd> + <kbd>Space</kbd> (<kbd>Alt</kbd> + <kbd>Space</kbd> on Linux), type a few letters, hit <kbd>↩ Return</kbd>.
 </p>
 
 ![Searching apps](docs/apps.png)
@@ -29,8 +29,8 @@
 |---|---|---|
 | 🚀 | Fuzzy app search, ranked by what you use most | `vsc` |
 | 📄 | File search | `report` |
-| 📋 | Clipboard history | **⌃⌥V** |
-| 🪟 | Window management (macOS) | `half`, **⌃⌥←** |
+| 📋 | Clipboard history | <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>V</kbd> |
+| 🪟 | Window management (macOS) | `half`, <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>←</kbd> |
 | ✂️ | Snippets and quicklinks | `sig`, `gh rune` |
 | 🧮 | Calculator and conversions | `(1200+340)*1.12`, `100 usd to php`, `3pm pst in manila` |
 | ⚙️ | System commands | `dark`, `volume`, `quit Safari` |
@@ -55,13 +55,16 @@ On macOS, grant Runecast **Accessibility** permission (System Settings → Priva
 
 | Shortcut | Action |
 |---|---|
-| **⌥Space** | Open Runecast |
-| **⌃⌥V** | Clipboard history |
-| **⌃⌥←** / **⌃⌥→** / **⌃⌥↩** / **⌃⌥C** | Left half / right half / maximize / center window |
-| **⌘,** | Settings |
-| **esc** | Clear, go back, or close |
+| <kbd>⌥ Option</kbd> + <kbd>Space</kbd> | Open Runecast |
+| <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>V</kbd> | Clipboard history |
+| <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>←</kbd> | Move window to the left half |
+| <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>→</kbd> | Move window to the right half |
+| <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>↩ Return</kbd> | Maximize window |
+| <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>C</kbd> | Center window |
+| <kbd>⌘ Cmd</kbd> + <kbd>,</kbd> | Settings |
+| <kbd>⎋ Esc</kbd> | Clear, go back, or close |
 
-Rebind any of these in Settings. On Linux, use Ctrl for ⌃ and ⌘, and Alt for ⌥.
+Rebind any of these in Settings. On Linux, use <kbd>Ctrl</kbd> in place of <kbd>⌘ Cmd</kbd> and <kbd>Alt</kbd> in place of <kbd>⌥ Option</kbd>.
 
 ## Configuration
 
@@ -71,6 +74,10 @@ Settings (search engine, appearance, hotkeys, snippets, quicklinks, aliases) are
 - Linux: `~/.config/runecast/`
 
 Clipboard history is stored in the same folder and includes everything you copy. You can turn it off in Settings.
+
+## Check out Raycast
+
+**Give [Raycast](https://www.raycast.com) a look first!** Runecast is a small open-source project inspired by it, and isn't affiliated with Raycast. If you're on macOS and want a polished launcher with a large extension store.
 
 ## Contributing
 
