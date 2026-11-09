@@ -54,10 +54,6 @@ target/release/runecast --tree tree.json --scene calc           # dump the eleme
 | `src/menubar.rs` | The menu bar icon |
 | `src/login.rs` | Launch at login |
 
-## Releases
-
-Bump `version` in `Cargo.toml`, then push a matching tag such as `v0.2.0`. The release workflow builds the macOS `.dmg` and the Linux tarball and publishes a GitHub Release.
-
 ## Ideas
 
 - Snippet keywords that expand as you type in any app
