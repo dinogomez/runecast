@@ -20,6 +20,7 @@ pub enum Kind {
     Window,
     Clip,
     File,
+    Usage,
 }
 
 impl Kind {
@@ -34,6 +35,7 @@ impl Kind {
             Kind::Window => "Window",
             Kind::Clip => "Clipboard",
             Kind::File => "File",
+            Kind::Usage => "AI Usage",
         }
     }
 
@@ -49,6 +51,7 @@ impl Kind {
             Kind::Window => "Move Window",
             Kind::Clip => "Paste",
             Kind::File => "Open File",
+            Kind::Usage => "Open Usage Page",
         }
     }
 }
@@ -68,6 +71,7 @@ pub enum Action {
     Window(Layout),
     ClipboardHistory,
     FileSearch,
+    AiUsage,
     Settings,
     Quit,
 }
@@ -82,11 +86,13 @@ pub struct Item {
     pub icon: Option<PathBuf>,
     /// A shortcut shown at the row's end, such as ⌃⌥← for Left Half.
     pub hotkey: Option<String>,
+    /// Percent left of an AI plan limit, drawn as a meter at the row's end.
+    pub meter: Option<f64>,
 }
 
 impl Item {
     pub fn new(title: impl Into<String>, subtitle: impl Into<String>, kind: Kind, action: Action) -> Self {
-        Item { title: title.into(), subtitle: subtitle.into(), kind, action, icon: None, hotkey: None }
+        Item { title: title.into(), subtitle: subtitle.into(), kind, action, icon: None, hotkey: None, meter: None }
     }
 }
 
@@ -291,6 +297,7 @@ pub fn commands(config: &Config) -> Vec<Item> {
         ..Item::new("Clipboard History", "Runecast", Kind::Command, Action::ClipboardHistory)
     });
     out.push(Item::new("Search Files", "Find files by name", Kind::Command, Action::FileSearch));
+    out.push(Item::new("AI Usage", "Claude and ChatGPT plan limits left", Kind::Command, Action::AiUsage));
     out.push(Item {
         hotkey: Some(if cfg!(target_os = "macos") { "⌘," } else { "Ctrl+," }.into()),
         ..Item::new("Runecast Settings", "Hotkeys, snippets, quicklinks and more", Kind::Command, Action::Settings)

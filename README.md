@@ -35,6 +35,7 @@
 | 🧮 | Calculator and conversions | `(1200+340)*1.12`, `100 usd to php`, `3pm pst in manila` |
 | ⚙️ | System commands | `dark`, `volume`, `quit Safari` |
 | 🏷️ | Aliases for any app or command | `vs` |
+| 📊 | Claude and ChatGPT plan usage left, from the Claude Code and Codex sign-in | `AI Usage` |
 | <img src="assets/tray.png" width="16" height="16" alt="Runecast icon"> | Menu bar icon (tray on Linux) | |
 
 Anything else falls back to a web search.

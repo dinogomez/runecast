@@ -8,6 +8,7 @@
 //! Headless, with no window: `runecast --snap out.png --scene apps` renders a scene to PNG, and
 //! `runecast --window settings --snap out.png --scene hotkeys` renders the Settings window.
 
+mod ai;
 mod calc;
 mod catalog;
 mod clipboard;
@@ -53,6 +54,7 @@ enum Mode {
     Root,
     Clipboard,
     Files,
+    AiUsage,
 }
 
 struct State {
@@ -68,6 +70,11 @@ struct State {
     files: Vec<Item>,
     /// Made in `setup`; searches files off the UI thread and lands the newest answer in `poll`.
     file_search: Option<Latest<Vec<PathBuf>>>,
+    /// Plan usage for AI Usage, fetched each time it opens.
+    ai: Vec<ai::Report>,
+    ai_fetch: Option<Latest<Vec<ai::Report>>>,
+    /// The bundled provider logos, decoded in `setup`.
+    ai_logos: Vec<(&'static str, Image)>,
     results: Vec<Item>,
     picked: usize,
     /// Made in `setup`, which has the waker that redraws once an icon decodes.
@@ -87,6 +94,7 @@ impl State {
         query.focused = true;
         let mut s = State {
             mode: Mode::Root, query, config, items, history, usage: Usage::default(), rates: convert::Rates::default(), files: Vec::new(), file_search: None,
+            ai: Vec::new(), ai_fetch: None, ai_logos: Vec::new(),
             results: Vec::new(), picked: 0,
             icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None,
         };
@@ -98,7 +106,7 @@ impl State {
     fn refresh(&mut self) {
         let query = self.query.text.trim().to_string();
         if let Some(search) = &self.file_search {
-            if self.mode != Mode::Clipboard && query.chars().count() >= files::MIN_QUERY {
+            if matches!(self.mode, Mode::Root | Mode::Files) && query.chars().count() >= files::MIN_QUERY {
                 search.request(query, |q| files::search(&q));
             } else {
                 search.cancel();
@@ -121,9 +129,20 @@ impl State {
             Mode::Root => catalog::search(&self.items, &self.query.text, &ctx),
             Mode::Clipboard => self.history.search(&self.query.text).into_iter().map(|t| clip_item(t)).collect(),
             Mode::Files => self.files.clone(),
+            Mode::AiUsage => {
+                let q = self.query.text.trim();
+                ai::items(&self.ai, now as i64).into_iter()
+                    .filter(|(provider, it)| q.is_empty() || fuzzy::score(q, &format!("{provider} {}", it.title)).is_some())
+                    // The installed Claude or ChatGPT app lends its icon.
+                    .map(|(provider, it)| Item { icon: self.app_icon(provider), ..it }).collect()
+            }
         };
         self.picked = self.picked.min(self.results.len().saturating_sub(1));
         self.load_icons();
+    }
+
+    fn app_icon(&self, name: &str) -> Option<PathBuf> {
+        self.items.iter().find(|it| it.kind == Kind::App && it.title.eq_ignore_ascii_case(name)).and_then(|it| it.icon.clone())
     }
 
     fn load_icons(&mut self) {
@@ -136,6 +155,10 @@ impl State {
     fn enter(&mut self, mode: Mode) {
         self.mode = mode;
         self.query.replace_text("");
+        if mode == Mode::AiUsage && let Some(fetch) = &self.ai_fetch {
+            self.ai.clear();
+            fetch.request((), |_| ai::fetch_all());
+        }
         self.refresh();
     }
 
@@ -199,13 +222,15 @@ fn clip_item(text: &str) -> Item {
 
 fn setup(s: &mut State, waker: Waker) {
     s.file_search = Some(Latest::new(waker.clone()).debounce(std::time::Duration::from_millis(120)));
+    s.ai_fetch = Some(Latest::new(waker.clone()));
     let cache = ImageCache::new(waker);
     s.logo = Some(cache.load(LOGO));
+    s.ai_logos = ai::LOGOS.iter().map(|(provider, png)| (*provider, cache.load(*png))).collect();
     s.icons = Some(cache);
     s.load_icons();
     if rune::is_headless() {
         // Screenshots show icons, not the frame before they decode.
-        for icon in s.icon_handles.values().chain(&s.logo) {
+        for icon in s.icon_handles.values().chain(&s.logo).chain(s.ai_logos.iter().map(|(_, img)| img)) {
             let _ = icon.wait();
         }
     } else if let Some(me) = s.me.clone() && !s.watching {
@@ -221,10 +246,19 @@ fn setup(s: &mut State, waker: Waker) {
     }
 }
 
-/// A file search landed: show it, keeping the selection where it was.
+/// A file search or AI usage fetch landed: show it, keeping the selection where it was.
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
-    let Some(hits) = s.file_search.as_ref().and_then(Latest::take) else { return false };
-    s.files = hits.iter().map(|p| files::item(p)).collect();
+    let hits = s.file_search.as_ref().and_then(Latest::take);
+    let reports = s.ai_fetch.as_ref().and_then(Latest::take);
+    if hits.is_none() && reports.is_none() {
+        return false;
+    }
+    if let Some(hits) = hits {
+        s.files = hits.iter().map(|p| files::item(p)).collect();
+    }
+    if let Some(reports) = reports {
+        s.ai = reports;
+    }
     s.relist();
     true
 }
@@ -232,7 +266,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
 fn run_picked(s: &mut State, tx: &mut Tx) {
     let Some(item) = s.results.get(s.picked).cloned() else { return };
     // Rows that are answers to this query rather than things to come back to don't count.
-    if !matches!(item.kind, Kind::Calculator | Kind::Web | Kind::Clip) && s.me.is_some() {
+    if !matches!(item.kind, Kind::Calculator | Kind::Web | Kind::Clip | Kind::Usage) && s.me.is_some() {
         s.usage.record(&item, usage::now());
         s.usage.save();
     }
@@ -255,6 +289,7 @@ fn run_picked(s: &mut State, tx: &mut Tx) {
         Action::Window(layout) => wm::apply(layout),
         Action::ClipboardHistory => return s.enter(Mode::Clipboard),
         Action::FileSearch => return s.enter(Mode::Files),
+        Action::AiUsage => return s.enter(Mode::AiUsage),
         Action::Settings => return s.open_settings(tx),
         Action::Quit => return tx.quit(),
         action => catalog::spawn(&action),
@@ -301,6 +336,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         Mode::Root => "Search for apps and commands…",
         Mode::Clipboard => "Search clipboard history…",
         Mode::Files => "Search files by name…",
+        Mode::AiUsage => "Filter AI usage…",
     };
     let field = text_input(&s.query, TextStyle::new(19.0, 400.0).lh(28.0)).key("query").single_line().grow(1.0)
         .color(t.text).placeholder(placeholder, t.text_secondary.alpha(0.8))
@@ -314,6 +350,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         Mode::Root => None,
         Mode::Clipboard => Some("Clipboard History"),
         Mode::Files => Some("Search Files"),
+        Mode::AiUsage => Some("AI Usage"),
     };
     if let Some(chip) = chip {
         search = search.child(row().h(26.0).px(10.0).radius(7.0).center().fill(accent.alpha(0.2))
@@ -324,7 +361,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let compact = s.mode == Mode::Clipboard;
     let mut list = col().key("results").w_full().h_full().padding(8.0).scroll(ScrollSpec { stick_bottom: false });
     for (i, item) in s.results.iter().enumerate() {
-        let icon = item.icon.as_ref().and_then(|p| s.icon_handles.get(p));
+        // AI Usage groups its rows under each provider's name.
+        if s.mode == Mode::AiUsage && let Some(provider) = section(s, i) {
+            list = list.child(row().px(10.0).pt(if i == 0 { 4.0 } else { 14.0 }).pb(6.0)
+                .child(text(provider).font(type_::SECTION).color(t.text_secondary)));
+        }
+        let icon = item.icon.as_ref().and_then(|p| s.icon_handles.get(p)).filter(|img| img.error().is_none())
+            .or_else(|| provider(s, item).and_then(|p| s.ai_logos.iter().find(|(name, _)| *name == p)).map(|(_, img)| img));
         list = list.child(result_row(item, icon, i == s.picked, compact, dark, accent, &t)
             .key(format!("row-{i}"))
             .on_hover(move |s: &mut State| s.picked = i)
@@ -336,6 +379,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let empty = match s.mode {
         Mode::Clipboard if s.history.entries.is_empty() => "Nothing copied yet",
         Mode::Files if s.query.text.trim().chars().count() < files::MIN_QUERY => "Type a file name",
+        Mode::AiUsage if s.ai_fetch.as_ref().is_some_and(Latest::is_pending) => "Checking usage…",
         _ => "No results",
     };
     let list = if s.results.is_empty() {
@@ -345,7 +389,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
 
     let body = match s.mode {
-        Mode::Root | Mode::Files => row().w_full().grow(1.0).min_h(0.0).child(list),
+        Mode::Root | Mode::Files | Mode::AiUsage => row().w_full().grow(1.0).min_h(0.0).child(list),
         Mode::Clipboard => row().w_full().grow(1.0).min_h(0.0)
             .child(col().w(300.0).h_full().min_h(0.0).child(list))
             .child(el().w(1.0).h_full().fill(t.separator))
@@ -370,6 +414,18 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(body)
         .child(el().h(1.0).w_full().fill(t.separator))
         .child(footer)
+}
+
+/// The provider whose group starts at row `i` of AI Usage, if one does.
+fn section(s: &State, i: usize) -> Option<&'static str> {
+    let here = provider(s, &s.results[i])?;
+    (i == 0 || provider(s, &s.results[i - 1]) != Some(here)).then_some(here)
+}
+
+/// The provider an AI Usage row belongs to, by the usage page it opens.
+fn provider(s: &State, item: &Item) -> Option<&'static str> {
+    let Action::Url(url) = &item.action else { return None };
+    s.ai.iter().find(|r| item.kind == Kind::Usage && r.page == *url).map(|r| r.provider)
 }
 
 /// The selected clipboard entry in full, with its size underneath.
@@ -401,6 +457,13 @@ fn result_row(item: &Item, icon: Option<&Image>, on: bool, compact: bool, dark: 
     }
     r = r.child(text(item.title.clone()).font(title_style).color(t.text).truncate())
         .child(text(item.subtitle.clone()).font(type_::BODY).color(t.text_secondary).truncate().grow(1.0));
+    if let Some(left) = item.meter {
+        // The accent until a limit is nearly used up.
+        let ink = if left < 15.0 { tok::accent(2, dark) } else { accent };
+        return r.child(row().w(120.0).h(4.0).radius(2.0).fill(t.control_off)
+                .child(el().w_frac((left / 100.0) as f32).h_full().radius(2.0).fill(ink)))
+            .child(row().w(64.0).justify_end().child(text(format!("{left:.0}% left")).font(type_::LABEL).color(t.text_secondary)));
+    }
     if let Some(hotkey) = &item.hotkey {
         r = r.child(keycap(hotkey.clone(), t));
     }
@@ -419,6 +482,7 @@ fn badge(item: &Item, dark: bool, t: &tok::Theme) -> El {
         Kind::Window => "◧".to_string(),
         Kind::Clip => "T".to_string(),
         Kind::File => "≡".to_string(),
+        Kind::Usage => "◔".to_string(),
         Kind::App => item.title.chars().find(|c| c.is_alphanumeric()).unwrap_or('•').to_uppercase().to_string(),
     };
     let hue = item.title.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
@@ -515,6 +579,11 @@ const SCENES: &[(&str, fn(&mut State))] = &[
     ("timezone", |s| scene(s, Mode::Root, "3pm pst in manila")),
     ("alias", |s| scene(s, Mode::Root, "vs")),
     ("system", |s| scene(s, Mode::Root, "volume")),
+    ("ai-usage", |s| {
+        scene(s, Mode::AiUsage, "");
+        s.ai = ai::demo(usage::now() as i64);
+        s.relist();
+    }),
     ("installed", installed),
 ];
 

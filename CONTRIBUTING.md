@@ -50,6 +50,7 @@ target/release/runecast --tree tree.json --scene calc           # dump the eleme
 | `src/fuzzy.rs` | Fuzzy ranking |
 | `src/calc.rs` | The calculator |
 | `src/convert.rs` | Unit, currency and time zone conversion |
+| `src/ai.rs` | Claude and ChatGPT plan usage |
 | `src/config.rs` | `config.json` |
 | `src/menubar.rs` | The menu bar icon |
 | `src/login.rs` | Launch at login |
