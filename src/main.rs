@@ -132,6 +132,10 @@ impl State {
             engine: self.config.engine(), boost: &boost, files: &self.files, rates: &self.rates,
             aliases: &self.config.aliases, now: &clock,
         };
+        // A row the user moved to stays picked when rows land above it (usage limits, file matches),
+        // so ↩ still runs what they chose. Row 0 stays on top: that's where answers belong.
+        let chosen = (self.picked > 0).then(|| self.results.get(self.picked))
+            .flatten().map(|it| (it.title.clone(), it.subtitle.clone(), it.kind));
         self.results = match self.mode {
             Mode::Root if ai::asked_for(&self.query.text) => {
                 // The limits stick to the top, each titled with its provider since there are no headings.
@@ -150,7 +154,8 @@ impl State {
                     .map(|(provider, it)| Item { icon: self.app_icon(provider), ..it }).collect()
             }
         };
-        self.picked = self.picked.min(self.results.len().saturating_sub(1));
+        let same = |it: &Item| chosen.as_ref().is_some_and(|(t, s, k)| it.title == *t && it.subtitle == *s && it.kind == *k);
+        self.picked = self.results.iter().position(same).unwrap_or(self.picked.min(self.results.len().saturating_sub(1)));
         self.load_icons();
     }
 
@@ -656,4 +661,27 @@ fn main() {
         ];
         windows
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_landing_above_keep_the_users_pick() {
+        let mut s = State::new(config::example(), demo_items(), demo_history());
+        s.query.replace_text("ai usage");
+        s.refresh();
+        // The user moves down to the web search before the limits arrive.
+        s.picked = s.results.iter().position(|it| it.kind == Kind::Web).unwrap();
+        assert!(s.picked > 0);
+        s.ai = ai::demo(0);
+        s.relist();
+        assert_eq!(s.results[0].title, "Claude · 5-hour session");
+        assert_eq!(s.results[s.picked].kind, Kind::Web);
+        // A fresh query starts at the top again.
+        s.query.replace_text("ai usag");
+        s.refresh();
+        assert_eq!(s.picked, 0);
+    }
 }
