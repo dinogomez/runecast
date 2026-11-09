@@ -9,6 +9,9 @@ Press **⌥Space** (Alt+Space on Linux) from anywhere, type a few letters, hit *
 ## What it does
 
 - **Fuzzy app search with real icons.** Finds `.app` bundles in `/Applications`, `/System/Applications` and `~/Applications` on macOS (drawn with their Finder icons), and `.desktop` entries on Linux (with their theme icons). Word starts and prefixes rank first, so `vsc` finds Visual Studio Code. Apps are rescanned each time the panel opens.
+- **Smarter ranking.** Apps and commands you run often and recently float to the top, and an empty panel lists them first. Use counts fade by half each week and live in `usage.json`.
+- **File search.** Type two or more letters and the best file matches appear above the web search row, from Spotlight on macOS. The Search Files command lists them all; ↩ opens a file, ⌘↩ shows it in Finder.
+- **Menu bar icon.** Open Runecast, Clipboard History, Search Files, Settings and Quit (a tray icon on Linux).
 - **Clipboard history.** **⌃⌥V**, or the Clipboard History command, lists the last 200 texts you copied, newest first, with a preview. Type to filter; ↩ pastes into the app you were in.
 - **Window management** (macOS). Halves, thirds, two thirds, Maximize and Center for the front window, on the screen it's on. Search for them, or use **⌃⌥←**, **⌃⌥→**, **⌃⌥↩** and **⌃⌥C**.
 - **Snippets.** Saved text you search by name; ↩ pastes it.
@@ -24,6 +27,8 @@ Press **⌥Space** (Alt+Space on Linux) from anywhere, type a few letters, hit *
 | ![Clipboard history](docs/clipboard.png) | ![Window management](docs/windows.png) |
 | **Quicklinks** | **Snippets** |
 | ![Quicklink](docs/quicklink.png) | ![Snippets](docs/snippets.png) |
+| **File search** | |
+| ![File search](docs/files.png) | |
 | **Calculator** | **Commands** |
 | ![Calculator](docs/calc.png) | ![Commands](docs/commands.png) |
 
@@ -100,6 +105,9 @@ target/release/runecast --tree tree.json --scene calc           # dump the eleme
 - `src/catalog.rs`: apps, commands, snippets, quicklinks, web search and how each runs
 - `src/clipboard.rs`: clipboard watcher and history
 - `src/wm.rs`: window layouts
+- `src/files.rs`: file search
+- `src/usage.rs`: usage-based ranking
+- `src/menubar.rs`: the menu bar icon
 - `src/config.rs`: `config.json`
 - `src/login.rs`: launch at login
 - `src/fuzzy.rs`: fuzzy ranking

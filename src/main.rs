@@ -12,10 +12,13 @@ mod calc;
 mod catalog;
 mod clipboard;
 mod config;
+mod files;
 mod fuzzy;
 mod hotkeys;
 mod login;
+mod menubar;
 mod settings;
+mod usage;
 mod wm;
 
 use std::collections::HashMap;
@@ -27,9 +30,10 @@ use clipboard::History;
 use config::Config;
 use hotkeys::{Hotkey, Registry};
 use settings::Settings;
+use usage::Usage;
 use rune::tok::{self, type_};
 use rune::{
-    Align, App, AppHandle, AppSpec, Color, Cx, DisplayTarget, El, Image, ImageCache, Key, KeyEvent, OverlayPlacement,
+    Align, App, AppHandle, Latest, AppSpec, Color, Cx, DisplayTarget, El, Image, ImageCache, Key, KeyEvent, OverlayPlacement,
     ScreenEdge, ScrollSpec, TextEdit, TextStyle, Titlebar, Tx, Waker, WindowOptions, WindowSpec, col, el, row, spacer, text,
     text_input,
 };
@@ -47,6 +51,7 @@ const LOGO: &[u8] = include_bytes!("../assets/icon.png");
 enum Mode {
     Root,
     Clipboard,
+    Files,
 }
 
 struct State {
@@ -55,6 +60,11 @@ struct State {
     config: Config,
     items: Vec<Item>,
     history: History,
+    usage: Usage,
+    /// File matches for the current query, from `file_search`.
+    files: Vec<Item>,
+    /// Made in `setup`; searches files off the UI thread and lands the newest answer in `poll`.
+    file_search: Option<Latest<Vec<PathBuf>>>,
     results: Vec<Item>,
     picked: usize,
     /// Made in `setup`, which has the waker that redraws once an icon decodes.
@@ -73,19 +83,38 @@ impl State {
         let mut query = TextEdit::new("");
         query.focused = true;
         let mut s = State {
-            mode: Mode::Root, query, config, items, history, results: Vec::new(), picked: 0,
+            mode: Mode::Root, query, config, items, history, usage: Usage::default(), files: Vec::new(), file_search: None,
+            results: Vec::new(), picked: 0,
             icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None,
         };
         s.refresh();
         s
     }
 
+    /// The query changed: list matches again and start a file search for it.
     fn refresh(&mut self) {
-        self.results = match self.mode {
-            Mode::Root => catalog::search(&self.items, &self.query.text, self.config.engine()),
-            Mode::Clipboard => self.history.search(&self.query.text).into_iter().map(|t| clip_item(t)).collect(),
-        };
+        let query = self.query.text.trim().to_string();
+        if let Some(search) = &self.file_search {
+            if self.mode != Mode::Clipboard && query.chars().count() >= files::MIN_QUERY {
+                search.request(query, |q| files::search(&q));
+            } else {
+                search.cancel();
+                self.files.clear();
+            }
+        }
+        self.relist();
         self.picked = 0;
+    }
+
+    /// The rows for the current query, mode and file matches.
+    fn relist(&mut self) {
+        let now = usage::now();
+        self.results = match self.mode {
+            Mode::Root => catalog::search(&self.items, &self.query.text, self.config.engine(), |it| self.usage.boost(it, now), &self.files),
+            Mode::Clipboard => self.history.search(&self.query.text).into_iter().map(|t| clip_item(t)).collect(),
+            Mode::Files => self.files.clone(),
+        };
+        self.picked = self.picked.min(self.results.len().saturating_sub(1));
         self.load_icons();
     }
 
@@ -138,8 +167,16 @@ impl State {
     }
 
     fn open_settings(&mut self, tx: &mut Tx) {
-        self.reset();
         tx.close_window();
+        self.show_settings();
+    }
+
+    /// Hides the panel and brings up Settings, from the panel or the menu bar.
+    fn show_settings(&mut self) {
+        self.reset();
+        if let Some(me) = &self.me {
+            me.close();
+        }
         if let Some(settings) = &self.settings {
             settings.update(|s, _| s.reload());
             settings.open();
@@ -153,6 +190,7 @@ fn clip_item(text: &str) -> Item {
 }
 
 fn setup(s: &mut State, waker: Waker) {
+    s.file_search = Some(Latest::new(waker.clone()).debounce(std::time::Duration::from_millis(120)));
     let cache = ImageCache::new(waker);
     s.logo = Some(cache.load(LOGO));
     s.icons = Some(cache);
@@ -175,8 +213,21 @@ fn setup(s: &mut State, waker: Waker) {
     }
 }
 
+/// A file search landed: show it, keeping the selection where it was.
+fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
+    let Some(hits) = s.file_search.as_ref().and_then(Latest::take) else { return false };
+    s.files = hits.iter().map(|p| files::item(p)).collect();
+    s.relist();
+    true
+}
+
 fn run_picked(s: &mut State, tx: &mut Tx) {
     let Some(item) = s.results.get(s.picked).cloned() else { return };
+    // Rows that are answers to this query rather than things to come back to don't count.
+    if !matches!(item.kind, Kind::Calculator | Kind::Web | Kind::Clip) && s.me.is_some() {
+        s.usage.record(&item, usage::now());
+        s.usage.save();
+    }
     match item.action {
         Action::Url(url) => {
             let _ = tx.open_url(&url);
@@ -195,6 +246,7 @@ fn run_picked(s: &mut State, tx: &mut Tx) {
         }
         Action::Window(layout) => wm::apply(layout),
         Action::ClipboardHistory => return s.enter(Mode::Clipboard),
+        Action::FileSearch => return s.enter(Mode::Files),
         Action::Settings => return s.open_settings(tx),
         Action::Quit => return tx.quit(),
         action => catalog::spawn(&action),
@@ -214,6 +266,14 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         Key::Escape | Key::Backspace if s.mode != Mode::Root && s.query.text.is_empty() => s.reset(),
         Key::Escape => tx.close_window(),
+        // ⌘↩ on a file shows it in Finder instead of opening it.
+        Key::Enter if ev.mods.cmd => {
+            let Some(Item { action: Action::OpenPath(path), kind: Kind::File, .. }) = s.results.get(s.picked) else { return false };
+            files::reveal(path);
+            s.reset();
+            tx.close_window();
+            return true;
+        }
         _ if ev.is_command(',') => {
             s.open_settings(tx);
             return true;
@@ -232,6 +292,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let placeholder = match s.mode {
         Mode::Root => "Search for apps and commands…",
         Mode::Clipboard => "Search clipboard history…",
+        Mode::Files => "Search files by name…",
     };
     let field = text_input(&s.query, TextStyle::new(19.0, 400.0).lh(28.0)).key("query").single_line().grow(1.0)
         .color(t.text).placeholder(placeholder, t.text_secondary.alpha(0.8))
@@ -241,9 +302,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .on_submit(run_picked);
     let mut search = row().h(SEARCH_H).px(20.0).gap(14.0).center_y()
         .child(text("⌕").font(TextStyle::new(22.0, 400.0).lh(28.0)).color(t.text_secondary));
-    if s.mode == Mode::Clipboard {
+    let chip = match s.mode {
+        Mode::Root => None,
+        Mode::Clipboard => Some("Clipboard History"),
+        Mode::Files => Some("Search Files"),
+    };
+    if let Some(chip) = chip {
         search = search.child(row().h(26.0).px(10.0).radius(7.0).center().fill(accent.alpha(0.2))
-            .child(text("Clipboard History").font(type_::LABEL).color(t.text)));
+            .child(text(chip).font(type_::LABEL).color(t.text)));
     }
     let search = search.child(field);
 
@@ -261,6 +327,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     let empty = match s.mode {
         Mode::Clipboard if s.history.entries.is_empty() => "Nothing copied yet",
+        Mode::Files if s.query.text.trim().chars().count() < files::MIN_QUERY => "Type a file name",
         _ => "No results",
     };
     let list = if s.results.is_empty() {
@@ -270,7 +337,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
 
     let body = match s.mode {
-        Mode::Root => row().w_full().grow(1.0).min_h(0.0).child(list),
+        Mode::Root | Mode::Files => row().w_full().grow(1.0).min_h(0.0).child(list),
         Mode::Clipboard => row().w_full().grow(1.0).min_h(0.0)
             .child(col().w(300.0).h_full().min_h(0.0).child(list))
             .child(el().w(1.0).h_full().fill(t.separator))
@@ -343,6 +410,7 @@ fn badge(item: &Item, dark: bool, t: &tok::Theme) -> El {
         Kind::Quicklink => "↗".to_string(),
         Kind::Window => "◧".to_string(),
         Kind::Clip => "T".to_string(),
+        Kind::File => "≡".to_string(),
         Kind::App => item.title.chars().find(|c| c.is_alphanumeric()).unwrap_or('•').to_uppercase().to_string(),
     };
     let hue = item.title.bytes().fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
@@ -425,6 +493,13 @@ const SCENES: &[(&str, fn(&mut State))] = &[
         scene(s, Mode::Clipboard, "");
         s.picked = 1;
     }),
+    ("files", |s| {
+        scene(s, Mode::Root, "report");
+        let home = std::env::var("HOME").unwrap_or_default();
+        s.files = ["Documents/Q3 Report.pdf", "Desktop/report-draft.docx", "Projects/runecast/docs/report.md"]
+            .iter().map(|f| files::item(&std::path::Path::new(&home).join(f))).collect();
+        s.relist();
+    }),
     ("installed", installed),
 ];
 
@@ -434,6 +509,7 @@ fn main() {
         let spec = AppSpec {
             scenes: SCENES,
             setup: Some(setup),
+            poll: Some(poll),
             ..AppSpec::new("Runecast", (WIDTH, HEIGHT), || unreachable!(), view)
         };
         let launcher = App::new(spec).windowless().accessory();
@@ -452,7 +528,9 @@ fn main() {
             .init(move || {
                 let config = config::load();
                 let mut s = State::new(config.clone(), catalog::load(&config), History::load());
+                s.usage = Usage::load();
                 s.me = Some(me);
+                s.relist();
                 s.registry = Some(shared);
                 s.settings = Some(settings_handle);
                 s
@@ -465,6 +543,9 @@ fn main() {
         launcher.handle().update(|s, _| {
             if let Some(registry) = &s.registry {
                 registry.lock().unwrap().register_all(&s.config);
+            }
+            if !rune::is_headless() && let Some(me) = s.me.clone() && let Err(e) = menubar::install(me) {
+                eprintln!("runecast: no menu bar icon: {e}");
             }
         });
         let launcher_handle = launcher.handle();

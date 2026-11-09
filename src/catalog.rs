@@ -18,6 +18,7 @@ pub enum Kind {
     Quicklink,
     Window,
     Clip,
+    File,
 }
 
 impl Kind {
@@ -31,6 +32,7 @@ impl Kind {
             Kind::Quicklink => "Quicklink",
             Kind::Window => "Window",
             Kind::Clip => "Clipboard",
+            Kind::File => "File",
         }
     }
 
@@ -45,6 +47,7 @@ impl Kind {
             Kind::Quicklink => "Open Quicklink",
             Kind::Window => "Move Window",
             Kind::Clip => "Paste",
+            Kind::File => "Open File",
         }
     }
 }
@@ -63,6 +66,7 @@ pub enum Action {
     Quicklink { url: String, keyword: String },
     Window(Layout),
     ClipboardHistory,
+    FileSearch,
     Settings,
     Quit,
 }
@@ -86,14 +90,19 @@ impl Item {
 }
 
 pub const MAX_RESULTS: usize = 50;
+/// File matches shown in the main list; Search Files lists them all.
+pub const FILES_IN_ROOT: usize = 3;
 
-/// The rows for `query`: the calculator answer first, then the best fuzzy matches, then a search
-/// with `engine` (a name and a URL template). An empty query lists the first apps and commands so
-/// the panel never opens blank.
-pub fn search(items: &[Item], query: &str, engine: (&str, &str)) -> Vec<Item> {
+/// The rows for `query`: the calculator answer first, then the best fuzzy matches, then `files`,
+/// then a search with `engine` (a name and a URL template). `boost` adds to an item's match score
+/// for how often and recently it was used. An empty query lists the most used items first so the
+/// panel never opens blank.
+pub fn search(items: &[Item], query: &str, engine: (&str, &str), boost: impl Fn(&Item) -> i32, files: &[Item]) -> Vec<Item> {
     let query = query.trim();
     if query.is_empty() {
-        return items.iter().take(MAX_RESULTS).cloned().collect();
+        let mut all: Vec<(i32, &Item)> = items.iter().map(|it| (boost(it), it)).collect();
+        all.sort_by_key(|(b, _)| -b);
+        return all.into_iter().take(MAX_RESULTS).map(|(_, it)| it.clone()).collect();
     }
     let mut out = Vec::new();
     if let Some(v) = calc::eval(query) {
@@ -106,10 +115,11 @@ pub fn search(items: &[Item], query: &str, engine: (&str, &str)) -> Vec<Item> {
             out.push(Item::new(format!("{}: {arg}", it.title), url.clone(), Kind::Quicklink, Action::Url(url)));
         }
     }
-    let mut hits: Vec<(i32, &Item)> = items.iter().filter_map(|it| fuzzy::score(query, &it.title).map(|s| (s, it))).collect();
+    let mut hits: Vec<(i32, &Item)> = items.iter().filter_map(|it| fuzzy::score(query, &it.title).map(|s| (s + boost(it), it))).collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title)));
     out.extend(hits.into_iter().map(|(_, it)| it.clone()));
-    out.truncate(MAX_RESULTS - 1);
+    out.truncate(MAX_RESULTS - 1 - files.len().min(FILES_IN_ROOT));
+    out.extend(files.iter().take(FILES_IN_ROOT).cloned());
     let (name, template) = engine;
     out.push(Item::new(format!("Search {name} for “{query}”"), "Web", Kind::Web, Action::Url(fill(template, query))));
     out.truncate(MAX_RESULTS);
@@ -204,6 +214,7 @@ pub fn commands(config: &Config) -> Vec<Item> {
         hotkey: config.hotkey_label(Hotkey::Clipboard),
         ..Item::new("Clipboard History", "Runecast", Kind::Command, Action::ClipboardHistory)
     });
+    out.push(Item::new("Search Files", "Find files by name", Kind::Command, Action::FileSearch));
     out.push(Item {
         hotkey: Some(if cfg!(target_os = "macos") { "⌘," } else { "Ctrl+," }.into()),
         ..Item::new("Runecast Settings", "Hotkeys, snippets, quicklinks and more", Kind::Command, Action::Settings)
@@ -294,11 +305,11 @@ mod tests {
     #[test]
     fn calculator_first_web_search_last() {
         let items = [app("Safari"), app("Calendar")];
-        let rows = search(&items, "12*3", crate::config::ENGINES[0]);
+        let rows = search(&items, "12*3", crate::config::ENGINES[0], |_| 0, &[]);
         assert_eq!(rows[0].kind, Kind::Calculator);
         assert_eq!(rows[0].title, "36");
         assert_eq!(rows.last().unwrap().kind, Kind::Web);
-        let ddg = search(&items, "rust ui", crate::config::ENGINES[1]);
+        let ddg = search(&items, "rust ui", crate::config::ENGINES[1], |_| 0, &[]);
         assert_eq!(ddg.last().unwrap().title, "Search DuckDuckGo for “rust ui”");
         assert!(matches!(ddg.last().unwrap().action, Action::Url(ref u) if u == "https://duckduckgo.com/?q=rust+ui"));
     }
@@ -307,20 +318,35 @@ mod tests {
     fn best_match_ranks_first_and_rows_are_capped() {
         let mut items: Vec<Item> = (0..MAX_RESULTS + 10).map(|i| app(&format!("Shutter {i}"))).collect();
         items.push(app("Terminal"));
-        let rows = search(&items, "ter", crate::config::ENGINES[0]);
+        let rows = search(&items, "ter", crate::config::ENGINES[0], |_| 0, &[]);
         assert_eq!(rows[0].title, "Terminal");
         assert_eq!(rows.len(), MAX_RESULTS);
     }
 
     #[test]
+    fn usage_breaks_ties_and_files_go_before_web() {
+        let items = [app("Notes"), app("Notion")];
+        assert_eq!(search(&items, "no", crate::config::ENGINES[0], |_| 0, &[])[0].title, "Notes");
+        let boosted = |it: &Item| if it.title == "Notion" { 40 } else { 0 };
+        let rows = search(&items, "no", crate::config::ENGINES[0], boosted, &[]);
+        assert_eq!(rows[0].title, "Notion");
+        // With no query, the most used comes first.
+        assert_eq!(search(&items, "", crate::config::ENGINES[0], boosted, &[])[0].title, "Notion");
+        let files: Vec<Item> = (0..5).map(|i| Item::new(format!("notes-{i}.md"), "~", Kind::File, Action::Shell(String::new()))).collect();
+        let rows = search(&items, "no", crate::config::ENGINES[0], |_| 0, &files);
+        let kinds: Vec<Kind> = rows.iter().map(|r| r.kind).collect();
+        assert_eq!(kinds, [Kind::App, Kind::App, Kind::File, Kind::File, Kind::File, Kind::Web]);
+    }
+
+    #[test]
     fn quicklink_keyword_takes_an_argument() {
         let items = extras(&crate::config::example());
-        let rows = search(&items, "GH rune ui", crate::config::ENGINES[0]);
+        let rows = search(&items, "GH rune ui", crate::config::ENGINES[0], |_| 0, &[]);
         assert_eq!(rows[0].title, "Search GitHub: rune ui");
         assert!(matches!(rows[0].action, Action::Url(ref u) if u == "https://github.com/search?q=rune+ui"));
         // Without an argument, or without the space, the keyword is an ordinary search.
-        assert!(search(&items, "gh", crate::config::ENGINES[0]).iter().all(|r| !r.title.contains(':')));
-        assert!(search(&items, "ghost", crate::config::ENGINES[0]).iter().all(|r| !r.title.contains(':')));
+        assert!(search(&items, "gh", crate::config::ENGINES[0], |_| 0, &[]).iter().all(|r| !r.title.contains(':')));
+        assert!(search(&items, "ghost", crate::config::ENGINES[0], |_| 0, &[]).iter().all(|r| !r.title.contains(':')));
         assert_eq!(fill("https://x.dev/?q={query}", "a&b c"), "https://x.dev/?q=a%26b+c");
     }
 
