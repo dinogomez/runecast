@@ -103,12 +103,21 @@ jobs:
             security set-keychain-settings -lut 3600 "$keychain"
             security unlock-keychain -p "$password" "$keychain"
             security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+            # The runner lacks Apple's Developer ID G2 intermediate, without which the certificate
+            # isn't trusted and find-identity -v hides it.
+            curl -sSfL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/g2.cer"
+            security import "$RUNNER_TEMP/g2.cer" -k "$keychain"
             security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
             # Prepend ours to the search list; the existing keychains are meant to split into arguments.
             # shellcheck disable=SC2046
             security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
             rm "$RUNNER_TEMP/cert.p12"
             identity=$(security find-identity -v -p codesigning "$keychain" | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')
+            if [ -z "$identity" ]; then
+              security find-identity -p codesigning "$keychain"
+              echo "::error::No valid Developer ID Application identity in the certificate secret."
+              exit 1
+            fi
             codesign --force --options runtime --timestamp --sign "$identity" "$app"
             echo "SIGNED=1" >> "$GITHUB_ENV"
           fi
