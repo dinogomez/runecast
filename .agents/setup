@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb: Linux libraries Rune links, the pinned Rust toolchain, and prebuilt
+# dependencies so `cargo test` starts warm. Safe to rerun.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+step() {
+  local name=$1
+  shift
+  echo "==> $name"
+  local start=$SECONDS
+  "$@"
+  echo "<== $name ($((SECONDS - start))s)"
+}
+
+install_libraries() {
+  # Rune links these on Linux (same list as CI).
+  local packages=(libxkbcommon-dev libwayland-dev pkg-config build-essential)
+  local missing=()
+  for package in "${packages[@]}"; do
+    dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q "install ok installed" || missing+=("$package")
+  done
+  if ((${#missing[@]})); then
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
+  fi
+}
+
+install_rustup() {
+  if [[ ! -x "$HOME/.cargo/bin/rustup" ]]; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+      sh -s -- -y --profile minimal --default-toolchain none
+  fi
+}
+
+step "Linux libraries" install_libraries
+step "rustup" install_rustup
+# The installer's profile changes can't reach this running script.
+# shellcheck disable=SC1091
+source "$HOME/.cargo/env"
+# Reads the channel and components pinned in rust-toolchain.toml.
+step "Rust toolchain" rustup toolchain install
+step "cargo fetch" cargo fetch --locked
+# The release build (thin LTO) is left out: it takes several minutes on a small orb.
+step "Build tests" cargo test --locked --no-run
