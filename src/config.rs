@@ -18,6 +18,7 @@ pub struct Config {
     pub hotkeys: BTreeMap<String, String>,
     pub snippets: Vec<Snippet>,
     pub quicklinks: Vec<Quicklink>,
+    pub aliases: Vec<Alias>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -72,6 +73,13 @@ pub const CLIPBOARD_SIZES: [usize; 4] = [50, 100, 200, 500];
 pub struct Snippet {
     pub name: String,
     pub text: String,
+}
+
+/// A short name for an app or command: typing `alias` puts the item titled `target` first.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Alias {
+    pub alias: String,
+    pub target: String,
 }
 
 /// A URL opened by name. `{query}` in the URL takes what's typed after its keyword:
@@ -171,6 +179,10 @@ pub fn example() -> Config {
             link("Search YouTube", "yt", "https://www.youtube.com/results?search_query={query}"),
             link("Search Maps", "map", "https://www.google.com/maps/search/{query}"),
             link("Translate", "tr", "https://translate.google.com/?sl=auto&tl=en&text={query}"),
+        ],
+        aliases: vec![
+            Alias { alias: "vs".into(), target: "Visual Studio Code".into() },
+            Alias { alias: "term".into(), target: "Terminal".into() },
         ],
         ..Config::default()
     };

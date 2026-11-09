@@ -1,4 +1,4 @@
-//! The Settings window: general options, hotkeys, snippets and quicklinks. Every change saves
+//! The Settings window: general options, hotkeys, aliases, snippets and quicklinks. Every change saves
 //! `config.json` and hands the new config to the launcher; a recorded hotkey is rebound at once.
 
 use std::sync::{Arc, Mutex};
@@ -22,10 +22,11 @@ pub enum Tab {
     Hotkeys,
     Snippets,
     Quicklinks,
+    Aliases,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::General, Tab::Hotkeys, Tab::Snippets, Tab::Quicklinks];
+    const ALL: [Tab; 5] = [Tab::General, Tab::Hotkeys, Tab::Aliases, Tab::Snippets, Tab::Quicklinks];
 
     fn title(self) -> &'static str {
         match self {
@@ -33,6 +34,7 @@ impl Tab {
             Tab::Hotkeys => "Hotkeys",
             Tab::Snippets => "Snippets",
             Tab::Quicklinks => "Quicklinks",
+            Tab::Aliases => "Aliases",
         }
     }
 
@@ -42,6 +44,7 @@ impl Tab {
             Tab::Hotkeys => "⌘",
             Tab::Snippets => "¶",
             Tab::Quicklinks => "↗",
+            Tab::Aliases => "@",
         }
     }
 }
@@ -56,6 +59,10 @@ pub struct Settings {
     /// The selected snippet and quicklink, and the fields editing them.
     snippet: usize,
     link: usize,
+    alias: usize,
+    /// Titles the launcher can find, to warn about an alias for something that isn't there.
+    /// Empty in headless scenes, where nothing is scanned.
+    known: Vec<String>,
     name: TextEdit,
     body: TextEdit,
     keyword: TextEdit,
@@ -71,7 +78,7 @@ impl Settings {
     pub fn new(config: Config, registry: Option<Arc<Mutex<Registry>>>, launcher: Option<AppHandle<State>>) -> Self {
         let mut s = Settings {
             tab: Tab::General, config, recorders: Vec::new(), open_select: None, login: false, cleared: false,
-            snippet: 0, link: 0, name: TextEdit::new(""), body: TextEdit::new(""), keyword: TextEdit::new(""),
+            snippet: 0, link: 0, alias: 0, known: Vec::new(), name: TextEdit::new(""), body: TextEdit::new(""), keyword: TextEdit::new(""),
             url: TextEdit::new(""), registry, logo: None, launcher,
         };
         s.refresh();
@@ -97,6 +104,10 @@ impl Settings {
         self.login = self.launcher.is_some() && login::enabled();
         self.snippet = self.snippet.min(self.config.snippets.len().saturating_sub(1));
         self.link = self.link.min(self.config.quicklinks.len().saturating_sub(1));
+        self.alias = self.alias.min(self.config.aliases.len().saturating_sub(1));
+        if self.launcher.is_some() {
+            self.known = crate::catalog::load(&self.config).into_iter().map(|it| it.title).collect();
+        }
         self.load_fields();
     }
 
@@ -152,13 +163,16 @@ impl Settings {
     fn load_fields(&mut self) {
         let snippet = self.config.snippets.get(self.snippet).cloned().unwrap_or_default();
         let link = self.config.quicklinks.get(self.link).cloned().unwrap_or_default();
-        let (name, body) = match self.tab {
-            Tab::Quicklinks => (link.name, String::new()),
-            _ => (snippet.name, snippet.text),
+        let alias = self.config.aliases.get(self.alias).cloned().unwrap_or_default();
+        // Aliases edit their alias in `name` and their target in `keyword`.
+        let (name, body, keyword) = match self.tab {
+            Tab::Quicklinks => (link.name, String::new(), link.keyword.unwrap_or_default()),
+            Tab::Aliases => (alias.alias, String::new(), alias.target),
+            _ => (snippet.name, snippet.text, String::new()),
         };
         self.name.replace_text(name);
         self.body.replace_text(body);
-        self.keyword.replace_text(link.keyword.unwrap_or_default());
+        self.keyword.replace_text(keyword);
         self.url.replace_text(link.url);
     }
 
@@ -174,6 +188,10 @@ impl Settings {
                 q.url = self.url.text.trim().to_string();
                 q.keyword = Some(self.keyword.text.trim().to_string()).filter(|k| !k.is_empty());
             },
+            Tab::Aliases => if let Some(a) = self.config.aliases.get_mut(self.alias) {
+                a.alias = self.name.text.trim().to_string();
+                a.target = self.keyword.text.trim().to_string();
+            },
             _ => return,
         }
         self.changed();
@@ -182,6 +200,7 @@ impl Settings {
     fn pick(&mut self, i: usize) {
         match self.tab {
             Tab::Quicklinks => self.link = i,
+            Tab::Aliases => self.alias = i,
             _ => self.snippet = i,
         }
         self.load_fields();
@@ -192,6 +211,10 @@ impl Settings {
             Tab::Quicklinks => {
                 self.config.quicklinks.push(Quicklink { name: "New Quicklink".into(), url: "https://".into(), keyword: None });
                 self.link = self.config.quicklinks.len() - 1;
+            }
+            Tab::Aliases => {
+                self.config.aliases.push(crate::config::Alias::default());
+                self.alias = self.config.aliases.len() - 1;
             }
             _ => {
                 self.config.snippets.push(Snippet { name: "New Snippet".into(), text: String::new() });
@@ -206,6 +229,9 @@ impl Settings {
         match self.tab {
             Tab::Quicklinks if self.link < self.config.quicklinks.len() => {
                 self.config.quicklinks.remove(self.link);
+            }
+            Tab::Aliases if self.alias < self.config.aliases.len() => {
+                self.config.aliases.remove(self.alias);
             }
             Tab::Snippets if self.snippet < self.config.snippets.len() => {
                 self.config.snippets.remove(self.snippet);
@@ -243,7 +269,7 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     let body = match s.tab {
         Tab::General => scrolling(general(s, &k, &mut layer)),
         Tab::Hotkeys => scrolling(hotkeys(s, &k)),
-        Tab::Snippets | Tab::Quicklinks => editor(s, &k),
+        Tab::Snippets | Tab::Quicklinks | Tab::Aliases => editor(s, &k),
     };
     let content = col().grow(1.0).min_w(0.0).h_full().fill(k.c.page)
         .child(row().key("header").w_full().h(56.0f32.max(chrome.height)).px(28.0).center_y().window_drag()
@@ -363,24 +389,29 @@ fn hotkeys(s: &Settings, k: &Kit) -> El {
         .child(text("Click a shortcut to record a new one. Backspace clears it; Escape cancels.").font(k.ty.small).color(k.c.text_faint)))
 }
 
-/// Snippets and quicklinks: a list on the left, the selected one's fields on the right.
+/// Snippets, quicklinks and aliases: a list on the left, the selected one's fields on the right.
 fn editor(s: &Settings, k: &Kit) -> El {
     let links = s.tab == Tab::Quicklinks;
-    let (names, selected): (Vec<&str>, usize) = if links {
-        (s.config.quicklinks.iter().map(|q| q.name.as_str()).collect(), s.link)
-    } else {
-        (s.config.snippets.iter().map(|q| q.name.as_str()).collect(), s.snippet)
+    let aliases = s.tab == Tab::Aliases;
+    let (names, selected): (Vec<String>, usize) = match s.tab {
+        Tab::Quicklinks => (s.config.quicklinks.iter().map(|q| q.name.clone()).collect(), s.link),
+        Tab::Aliases => (s.config.aliases.iter().map(|a| match (a.alias.is_empty(), a.target.is_empty()) {
+            (true, _) => String::new(),
+            (false, true) => a.alias.clone(),
+            (false, false) => format!("{} → {}", a.alias, a.target),
+        }).collect(), s.alias),
+        _ => (s.config.snippets.iter().map(|q| q.name.clone()).collect(), s.snippet),
     };
     let mut list = col().key("list").w_full().grow(1.0).min_h(0.0).gap(2.0).scroll(ScrollSpec { stick_bottom: false });
     for (i, name) in names.iter().enumerate() {
         let on = i == selected;
-        let name = if name.trim().is_empty() { "Untitled" } else { name };
+        let name = if name.trim().is_empty() { "Untitled" } else { name.as_str() };
         list = list.child(row().key(format!("item-{i}")).h(32.0).px(10.0).radius(k.radius.md).center_y()
             .fill(if on { k.c.layer_02 } else { rune::Color::TRANSPARENT })
             .child(text(name.to_string()).font(k.ty.ui).color(if on { k.c.text_base } else { k.c.text_muted }).truncate())
             .on_press(move |s: &mut Settings| s.pick(i)));
     }
-    let add = Button::new(if links { "Add Quicklink" } else { "Add Snippet" }).variant(ButtonVariant::Outline)
+    let add = Button::new(match s.tab { Tab::Quicklinks => "Add Quicklink", Tab::Aliases => "Add Alias", _ => "Add Snippet" }).variant(ButtonVariant::Outline)
         .on_press(|s: &mut Settings| s.add()).build(k);
     let left = col().w(220.0).h_full().padding(12.0).gap(8.0).child(list).child(add);
 
@@ -391,19 +422,33 @@ fn editor(s: &Settings, k: &Kit) -> El {
     };
     let right = if names.is_empty() {
         col().grow(1.0).h_full().center().gap(6.0)
-            .child(text(if links { "No quicklinks yet" } else { "No snippets yet" }).font(k.ty.ui_medium).color(k.c.text_base))
+            .child(text(match s.tab { Tab::Quicklinks => "No quicklinks yet", Tab::Aliases => "No aliases yet", _ => "No snippets yet" })
+                .font(k.ty.ui_medium).color(k.c.text_base))
             .child(text("Add one to search it from the launcher.").font(k.ty.small).color(k.c.text_muted))
     } else {
-        let mut form = col().grow(1.0).min_w(0.0).h_full().padding(20.0).gap(8.0)
-            .child(label("Name"))
-            .child(field("name", "Name", &s.name, "Name", name_edit));
+        let mut form = col().grow(1.0).min_w(0.0).h_full().padding(20.0).gap(8.0);
+        if aliases {
+            let target = s.keyword.text.trim();
+            let missing = !s.known.is_empty() && !target.is_empty() && !s.known.iter().any(|t| t.eq_ignore_ascii_case(target));
+            let (hint, color) = if missing {
+                (format!("Nothing in the launcher is named “{target}”. Use the name as it shows in search."), k.c.danger.fg)
+            } else {
+                ("Type the alias in the launcher to put this app or command first.".to_string(), k.c.text_faint)
+            };
+            form = form
+                .child(label("Alias")).child(field("name", "Alias", &s.name, "vs", name_edit))
+                .child(label("Opens")).child(field("keyword", "Opens", &s.keyword, "Visual Studio Code", keyword_edit))
+                .child(text(hint).font(k.ty.small).color(color).wrap().w_full());
+        } else {
+            form = form.child(label("Name")).child(field("name", "Name", &s.name, "Name", name_edit));
+        }
         if links {
             form = form
                 .child(label("Keyword")).child(field("keyword", "Keyword", &s.keyword, &s.name.text.to_lowercase(), keyword_edit))
                 .child(label("URL")).child(field("url", "URL", &s.url, "https://example.com/search?q={query}", url_edit))
                 .child(text("Put {query} in the URL to take what's typed after the keyword: “gh rune” searches GitHub for “rune”.")
                     .font(k.ty.small).color(k.c.text_faint).wrap().w_full());
-        } else {
+        } else if !aliases {
             form = form.child(label("Text")).child(el().key("text").w_full()
                 .child(TextArea::new(&s.body).width(None).rows(9).placeholder("What to paste").label("Text")
                     .on_edit(|s: &mut Settings| &mut s.body).on_change(|s: &mut Settings, _| s.store_fields()).build(k)))
@@ -444,6 +489,7 @@ pub const SCENES: &[(&str, fn(&mut Settings))] = &[
     ("hotkeys", |s| scene(s, Tab::Hotkeys)),
     ("snippets", |s| scene(s, Tab::Snippets)),
     ("quicklinks", |s| scene(s, Tab::Quicklinks)),
+    ("aliases", |s| scene(s, Tab::Aliases)),
 ];
 
 fn scene(s: &mut Settings, tab: Tab) {

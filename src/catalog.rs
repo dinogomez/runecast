@@ -3,7 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::config::Config;
+use crate::config::{Alias, Config};
+use crate::convert::{self, Rates};
 use crate::hotkeys::Hotkey;
 use crate::wm::Layout;
 use crate::{calc, fuzzy};
@@ -93,12 +94,29 @@ pub const MAX_RESULTS: usize = 50;
 /// File matches shown in the main list; Search Files lists them all.
 pub const FILES_IN_ROOT: usize = 3;
 
-/// The rows for `query`: the calculator answer first, then the best fuzzy matches, then `files`,
-/// then a search with `engine` (a name and a URL template). `boost` adds to an item's match score
-/// for how often and recently it was used. An empty query lists the most used items first so the
-/// panel never opens blank.
-pub fn search(items: &[Item], query: &str, engine: (&str, &str), boost: impl Fn(&Item) -> i32, files: &[Item]) -> Vec<Item> {
+/// What a search knows besides the items and the query.
+pub struct Ctx<'a> {
+    /// The web search's engine name and URL template.
+    pub engine: (&'a str, &'a str),
+    /// Added to an item's match score for how often and recently it was used.
+    pub boost: &'a dyn Fn(&Item) -> i32,
+    /// File matches for the query, from the file search.
+    pub files: &'a [Item],
+    pub rates: &'a Rates,
+    pub aliases: &'a [Alias],
+    pub now: &'a jiff::Zoned,
+}
+
+/// What an alias adds: an exact alias beats any title match, a prefix of one nearly does.
+const ALIAS_EXACT: i32 = 1000;
+const ALIAS_PREFIX: i32 = 400;
+
+/// The rows for `query`: a calculator or conversion answer first, then the best matches (by alias,
+/// title and use), then file matches, then a web search. An empty query lists the most used items
+/// first so the panel never opens blank.
+pub fn search(items: &[Item], query: &str, ctx: &Ctx) -> Vec<Item> {
     let query = query.trim();
+    let boost = ctx.boost;
     if query.is_empty() {
         let mut all: Vec<(i32, &Item)> = items.iter().map(|it| (boost(it), it)).collect();
         all.sort_by_key(|(b, _)| -b);
@@ -108,22 +126,53 @@ pub fn search(items: &[Item], query: &str, engine: (&str, &str), boost: impl Fn(
     if let Some(v) = calc::eval(query) {
         let answer = calc::format(v);
         out.push(Item::new(answer.clone(), format!("{query} ="), Kind::Calculator, Action::Copy(answer.replace(',', ""))));
+    } else if let Some(a) = convert::convert(query, ctx.rates, ctx.now) {
+        out.push(Item::new(a.title, a.subtitle, Kind::Calculator, Action::Copy(a.copy)));
     }
+    out.extend(quit_rows(items, query));
     for it in items {
         if let Action::Quicklink { url, keyword } = &it.action && let Some(arg) = argument(query, keyword) {
             let url = fill(url, arg);
             out.push(Item::new(format!("{}: {arg}", it.title), url.clone(), Kind::Quicklink, Action::Url(url)));
         }
     }
-    let mut hits: Vec<(i32, &Item)> = items.iter().filter_map(|it| fuzzy::score(query, &it.title).map(|s| (s + boost(it), it))).collect();
+    let q = query.to_lowercase();
+    let alias_score = |it: &Item| {
+        ctx.aliases.iter().filter(|a| a.target.eq_ignore_ascii_case(&it.title)).map(|a| a.alias.to_lowercase())
+            .filter_map(|a| if a == q { Some(ALIAS_EXACT) } else if a.starts_with(&q) { Some(ALIAS_PREFIX) } else { None }).max()
+    };
+    let mut hits: Vec<(i32, &Item)> = items.iter().filter_map(|it| {
+        let score = match (alias_score(it), fuzzy::score(query, &it.title)) {
+            (None, None) => return None,
+            (a, f) => a.unwrap_or(0).max(f.unwrap_or(0)),
+        };
+        Some((score + boost(it), it))
+    }).collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.title.cmp(&b.1.title)));
     out.extend(hits.into_iter().map(|(_, it)| it.clone()));
-    out.truncate(MAX_RESULTS - 1 - files.len().min(FILES_IN_ROOT));
-    out.extend(files.iter().take(FILES_IN_ROOT).cloned());
-    let (name, template) = engine;
+    out.truncate(MAX_RESULTS - 1 - ctx.files.len().min(FILES_IN_ROOT));
+    out.extend(ctx.files.iter().take(FILES_IN_ROOT).cloned());
+    let (name, template) = ctx.engine;
     out.push(Item::new(format!("Search {name} for “{query}”"), "Web", Kind::Web, Action::Url(fill(template, query))));
     out.truncate(MAX_RESULTS);
     out
+}
+
+/// "quit saf" → a row that quits Safari, for each app whose name matches what follows "quit".
+/// macOS only: it asks the app to quit, and does nothing when it isn't running.
+fn quit_rows(items: &[Item], query: &str) -> Vec<Item> {
+    let Some(rest) = query.get(..5).filter(|h| h.eq_ignore_ascii_case("quit ")).map(|_| query[5..].trim()) else { return Vec::new() };
+    if !cfg!(target_os = "macos") || rest.is_empty() {
+        return Vec::new();
+    }
+    let mut apps: Vec<(i32, &Item)> = items.iter().filter(|it| it.kind == Kind::App)
+        .filter_map(|it| fuzzy::score(rest, &it.title).map(|s| (s, it))).collect();
+    apps.sort_by_key(|(s, _)| -s);
+    apps.into_iter().take(3).map(|(_, app)| {
+        let name = app.title.replace('"', "");
+        let line = format!(r#"osascript -e 'if application "{name}" is running then tell application "{name}" to quit'"#);
+        Item { icon: app.icon.clone(), ..Item::new(format!("Quit {}", app.title), "Quit Application", Kind::Command, Action::Shell(line)) }
+    }).collect()
 }
 
 /// What's typed after `keyword` and a space, when the query starts with them (ignoring case).
@@ -149,7 +198,15 @@ pub fn load(config: &Config) -> Vec<Item> {
         items.extend(layouts(config));
     }
     items.extend(extras(config));
+    show_aliases(&mut items, config);
     items
+}
+
+/// An alias shows at the end of its item's row, where a hotkey would.
+pub fn show_aliases(items: &mut [Item], config: &Config) {
+    for item in items.iter_mut().filter(|it| it.hotkey.is_none()) {
+        item.hotkey = config.aliases.iter().find(|a| a.target.eq_ignore_ascii_case(&item.title) && !a.alias.trim().is_empty()).map(|a| a.alias.clone());
+    }
 }
 
 pub fn layouts(config: &Config) -> impl Iterator<Item = Item> + '_ {
@@ -205,10 +262,29 @@ pub fn commands(config: &Config) -> Vec<Item> {
         cmd("Empty Trash", r#"osascript -e 'tell application "Finder" to empty trash'"#);
         cmd("Toggle Dark Mode", r#"osascript -e 'tell application "System Events" to tell appearance preferences to set dark mode to not dark mode'"#);
         cmd("Open Downloads", "open ~/Downloads");
+        cmd("Volume Up", "osascript -e 'set volume output volume ((output volume of (get volume settings)) + 10)'");
+        cmd("Volume Down", "osascript -e 'set volume output volume ((output volume of (get volume settings)) - 10)'");
+        cmd("Toggle Mute", "osascript -e 'set volume output muted (not (output muted of (get volume settings)))'");
+        let wifi = |on: &str| format!("networksetup -setairportpower \"$(networksetup -listallhardwareports | awk '/Wi-Fi|AirPort/{{getline; print $2; exit}}')\" {on}");
+        cmd("Turn Wi-Fi On", &wifi("on"));
+        cmd("Turn Wi-Fi Off", &wifi("off"));
+        cmd("Hide All Apps", r#"osascript -e 'tell application "System Events" to set visible of every process whose visible is true and frontmost is false to false'"#);
+        // loginwindow asks for confirmation before each of these, as the Apple menu does.
+        cmd("Restart", r#"osascript -e 'tell application "loginwindow" to «event aevtrrst»'"#);
+        cmd("Shut Down", r#"osascript -e 'tell application "loginwindow" to «event aevtrsdn»'"#);
+        cmd("Log Out", r#"osascript -e 'tell application "loginwindow" to «event aevtlogo»'"#);
     } else {
         cmd("Lock Screen", "loginctl lock-session");
         cmd("Sleep", "systemctl suspend");
         cmd("Open Downloads", "xdg-open ~/Downloads");
+        cmd("Volume Up", "pactl set-sink-volume @DEFAULT_SINK@ +10%");
+        cmd("Volume Down", "pactl set-sink-volume @DEFAULT_SINK@ -10%");
+        cmd("Toggle Mute", "pactl set-sink-mute @DEFAULT_SINK@ toggle");
+        cmd("Turn Wi-Fi On", "nmcli radio wifi on");
+        cmd("Turn Wi-Fi Off", "nmcli radio wifi off");
+        cmd("Restart", "systemctl reboot");
+        cmd("Shut Down", "systemctl poweroff");
+        cmd("Log Out", "loginctl terminate-session \"$XDG_SESSION_ID\"");
     }
     out.push(Item {
         hotkey: config.hotkey_label(Hotkey::Clipboard),
@@ -298,6 +374,29 @@ fn encode(s: &str) -> String {
 mod tests {
     use super::*;
 
+    static NO_RATES: std::sync::LazyLock<Rates> = std::sync::LazyLock::new(Rates::default);
+    static NOW: std::sync::LazyLock<jiff::Zoned> = std::sync::LazyLock::new(|| "2026-11-09T10:00:00+08:00[Asia/Manila]".parse().unwrap());
+
+    fn unused(_: &Item) -> i32 {
+        0
+    }
+
+    fn plain() -> Ctx<'static> {
+        Ctx { engine: crate::config::ENGINES[0], boost: &unused, files: &[], rates: &NO_RATES, aliases: &[], now: &NOW }
+    }
+
+    #[test]
+    fn an_alias_puts_its_item_first_and_conversions_answer_first() {
+        let items = [app("Visual Studio Code"), app("Vimeo"), app("VSCO")];
+        let aliases = [Alias { alias: "vs".into(), target: "visual studio code".into() }];
+        let ctx = Ctx { aliases: &aliases, ..plain() };
+        assert_eq!(search(&items, "vs", &plain())[0].title, "VSCO", "without the alias, the better title match wins");
+        assert_eq!(search(&items, "vs", &ctx)[0].title, "Visual Studio Code");
+        assert_eq!(search(&items, "v", &ctx)[0].title, "Visual Studio Code", "a prefix of the alias counts too");
+        let rows = search(&items, "5 km in mi", &plain());
+        assert_eq!((rows[0].kind, rows[0].title.as_str()), (Kind::Calculator, "3.1069 mi"));
+    }
+
     fn app(name: &str) -> Item {
         Item::new(name, "", Kind::App, Action::Shell(String::new()))
     }
@@ -305,11 +404,11 @@ mod tests {
     #[test]
     fn calculator_first_web_search_last() {
         let items = [app("Safari"), app("Calendar")];
-        let rows = search(&items, "12*3", crate::config::ENGINES[0], |_| 0, &[]);
+        let rows = search(&items, "12*3", &plain());
         assert_eq!(rows[0].kind, Kind::Calculator);
         assert_eq!(rows[0].title, "36");
         assert_eq!(rows.last().unwrap().kind, Kind::Web);
-        let ddg = search(&items, "rust ui", crate::config::ENGINES[1], |_| 0, &[]);
+        let ddg = search(&items, "rust ui", &Ctx { engine: crate::config::ENGINES[1], ..plain() });
         assert_eq!(ddg.last().unwrap().title, "Search DuckDuckGo for “rust ui”");
         assert!(matches!(ddg.last().unwrap().action, Action::Url(ref u) if u == "https://duckduckgo.com/?q=rust+ui"));
     }
@@ -318,7 +417,7 @@ mod tests {
     fn best_match_ranks_first_and_rows_are_capped() {
         let mut items: Vec<Item> = (0..MAX_RESULTS + 10).map(|i| app(&format!("Shutter {i}"))).collect();
         items.push(app("Terminal"));
-        let rows = search(&items, "ter", crate::config::ENGINES[0], |_| 0, &[]);
+        let rows = search(&items, "ter", &plain());
         assert_eq!(rows[0].title, "Terminal");
         assert_eq!(rows.len(), MAX_RESULTS);
     }
@@ -326,14 +425,14 @@ mod tests {
     #[test]
     fn usage_breaks_ties_and_files_go_before_web() {
         let items = [app("Notes"), app("Notion")];
-        assert_eq!(search(&items, "no", crate::config::ENGINES[0], |_| 0, &[])[0].title, "Notes");
+        assert_eq!(search(&items, "no", &plain())[0].title, "Notes");
         let boosted = |it: &Item| if it.title == "Notion" { 40 } else { 0 };
-        let rows = search(&items, "no", crate::config::ENGINES[0], boosted, &[]);
+        let rows = search(&items, "no", &Ctx { boost: &boosted, ..plain() });
         assert_eq!(rows[0].title, "Notion");
         // With no query, the most used comes first.
-        assert_eq!(search(&items, "", crate::config::ENGINES[0], boosted, &[])[0].title, "Notion");
+        assert_eq!(search(&items, "", &Ctx { boost: &boosted, ..plain() })[0].title, "Notion");
         let files: Vec<Item> = (0..5).map(|i| Item::new(format!("notes-{i}.md"), "~", Kind::File, Action::Shell(String::new()))).collect();
-        let rows = search(&items, "no", crate::config::ENGINES[0], |_| 0, &files);
+        let rows = search(&items, "no", &Ctx { files: &files, ..plain() });
         let kinds: Vec<Kind> = rows.iter().map(|r| r.kind).collect();
         assert_eq!(kinds, [Kind::App, Kind::App, Kind::File, Kind::File, Kind::File, Kind::Web]);
     }
@@ -341,12 +440,12 @@ mod tests {
     #[test]
     fn quicklink_keyword_takes_an_argument() {
         let items = extras(&crate::config::example());
-        let rows = search(&items, "GH rune ui", crate::config::ENGINES[0], |_| 0, &[]);
+        let rows = search(&items, "GH rune ui", &plain());
         assert_eq!(rows[0].title, "Search GitHub: rune ui");
         assert!(matches!(rows[0].action, Action::Url(ref u) if u == "https://github.com/search?q=rune+ui"));
         // Without an argument, or without the space, the keyword is an ordinary search.
-        assert!(search(&items, "gh", crate::config::ENGINES[0], |_| 0, &[]).iter().all(|r| !r.title.contains(':')));
-        assert!(search(&items, "ghost", crate::config::ENGINES[0], |_| 0, &[]).iter().all(|r| !r.title.contains(':')));
+        assert!(search(&items, "gh", &plain()).iter().all(|r| !r.title.contains(':')));
+        assert!(search(&items, "ghost", &plain()).iter().all(|r| !r.title.contains(':')));
         assert_eq!(fill("https://x.dev/?q={query}", "a&b c"), "https://x.dev/?q=a%26b+c");
     }
 

@@ -11,6 +11,7 @@ rune-kit = { git = "https://github.com/anomalyco/rune", rev = "d751f07106eac47bd
 arboard = { version = "3.7", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+jiff = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

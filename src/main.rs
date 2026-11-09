@@ -12,6 +12,7 @@ mod calc;
 mod catalog;
 mod clipboard;
 mod config;
+mod convert;
 mod files;
 mod fuzzy;
 mod hotkeys;
@@ -61,6 +62,8 @@ struct State {
     items: Vec<Item>,
     history: History,
     usage: Usage,
+    /// Currency rates for conversions, fetched in the background when stale.
+    rates: convert::Rates,
     /// File matches for the current query, from `file_search`.
     files: Vec<Item>,
     /// Made in `setup`; searches files off the UI thread and lands the newest answer in `poll`.
@@ -83,7 +86,7 @@ impl State {
         let mut query = TextEdit::new("");
         query.focused = true;
         let mut s = State {
-            mode: Mode::Root, query, config, items, history, usage: Usage::default(), files: Vec::new(), file_search: None,
+            mode: Mode::Root, query, config, items, history, usage: Usage::default(), rates: convert::Rates::default(), files: Vec::new(), file_search: None,
             results: Vec::new(), picked: 0,
             icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None,
         };
@@ -108,9 +111,14 @@ impl State {
 
     /// The rows for the current query, mode and file matches.
     fn relist(&mut self) {
-        let now = usage::now();
+        let (now, clock) = (usage::now(), jiff::Zoned::now());
+        let boost = |it: &Item| self.usage.boost(it, now);
+        let ctx = catalog::Ctx {
+            engine: self.config.engine(), boost: &boost, files: &self.files, rates: &self.rates,
+            aliases: &self.config.aliases, now: &clock,
+        };
         self.results = match self.mode {
-            Mode::Root => catalog::search(&self.items, &self.query.text, self.config.engine(), |it| self.usage.boost(it, now), &self.files),
+            Mode::Root => catalog::search(&self.items, &self.query.text, &ctx),
             Mode::Clipboard => self.history.search(&self.query.text).into_iter().map(|t| clip_item(t)).collect(),
             Mode::Files => self.files.clone(),
         };
@@ -444,13 +452,14 @@ fn demo_items() -> Vec<Item> {
         app("Spotify", "/Applications"), app("System Settings", "/System/Applications"),
         app("Terminal", "/System/Applications/Utilities"), app("Visual Studio Code", "/Applications"),
     ];
-    for title in ["Lock Screen", "Sleep", "Toggle Dark Mode", "Empty Trash"] {
+    for title in ["Lock Screen", "Sleep", "Toggle Dark Mode", "Empty Trash", "Volume Up", "Volume Down", "Toggle Mute"] {
         items.push(Item::new(title, "System", Kind::Command, Action::Shell(String::new())));
     }
     let config = config::example();
     items.extend(catalog::commands(&config).into_iter().filter(|it| it.subtitle != "System"));
     items.extend(catalog::layouts(&config));
     items.extend(catalog::extras(&config));
+    catalog::show_aliases(&mut items, &config);
     items
 }
 
@@ -469,6 +478,7 @@ fn demo_history() -> History {
 
 fn scene(s: &mut State, mode: Mode, query: &str) {
     *s = State::new(config::example(), demo_items(), demo_history());
+    s.rates = convert::Rates::demo();
     s.mode = mode;
     s.query.replace_text(query);
     s.refresh();
@@ -500,6 +510,11 @@ const SCENES: &[(&str, fn(&mut State))] = &[
             .iter().map(|f| files::item(&std::path::Path::new(&home).join(f))).collect();
         s.relist();
     }),
+    ("convert", |s| scene(s, Mode::Root, "5 km in mi")),
+    ("currency", |s| scene(s, Mode::Root, "100 usd to php")),
+    ("timezone", |s| scene(s, Mode::Root, "3pm pst in manila")),
+    ("alias", |s| scene(s, Mode::Root, "vs")),
+    ("system", |s| scene(s, Mode::Root, "volume")),
     ("installed", installed),
 ];
 
@@ -529,6 +544,7 @@ fn main() {
                 let config = config::load();
                 let mut s = State::new(config.clone(), catalog::load(&config), History::load());
                 s.usage = Usage::load();
+                s.rates = convert::Rates::load();
                 s.me = Some(me);
                 s.relist();
                 s.registry = Some(shared);
@@ -544,8 +560,11 @@ fn main() {
             if let Some(registry) = &s.registry {
                 registry.lock().unwrap().register_all(&s.config);
             }
-            if !rune::is_headless() && let Some(me) = s.me.clone() && let Err(e) = menubar::install(me) {
-                eprintln!("runecast: no menu bar icon: {e}");
+            if !rune::is_headless() && let Some(me) = s.me.clone() {
+                if let Err(e) = menubar::install(me.clone()) {
+                    eprintln!("runecast: no menu bar icon: {e}");
+                }
+                convert::refresh_in_background(s.rates.is_stale(usage::now()), move |rates| me.update(move |s, _| s.rates = rates));
             }
         });
         let launcher_handle = launcher.handle();

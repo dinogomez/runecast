@@ -17,7 +17,9 @@ Press **⌥Space** (Alt+Space on Linux) from anywhere, type a few letters, hit *
 - **Snippets.** Saved text you search by name; ↩ pastes it.
 - **Quicklinks.** Saved URLs. A URL with `{query}` takes an argument after its keyword: `gh rune` searches GitHub for "rune". Picking one with nothing typed fills in its keyword for you.
 - **Inline calculator.** Type `(1200+340)*1.12` and the answer is the first row; ↩ copies it.
-- **System commands.** Lock Screen, Sleep, Empty Trash, Toggle Dark Mode, Open Downloads.
+- **Conversions.** Units (`5 km in mi`, `72f in c`, `1 gib in mb`), currency (`100 usd to php`) and time zones (`3pm pst in manila`, `time in tokyo`, `8pm new york to manila`). Currency rates come from [open.er-api.com](https://open.er-api.com) (no key needed), cached in `rates.json` and refreshed every 12 hours.
+- **Aliases.** Give any app or command a short name in Settings: `vs` puts Visual Studio Code first.
+- **System commands.** Lock Screen, Sleep, Empty Trash, Toggle Dark Mode, Open Downloads, Volume Up/Down, Toggle Mute, Wi-Fi On/Off, Hide All Apps, Restart, Shut Down and Log Out. Type `quit <app>` to quit a running app.
 - **Web search fallback.** The last row always searches Google for what you typed.
 - **Settings window.** ⌘, in the panel (Ctrl+, on Linux), or the Runecast Settings command. Record any hotkey again, pick a search engine and appearance, turn clipboard history on or off, launch at login, and edit snippets and quicklinks.
 - **Keyboard first.** ↑/↓ to move, ↩ to run, esc clears the query, then goes back or closes.
@@ -31,6 +33,10 @@ Press **⌥Space** (Alt+Space on Linux) from anywhere, type a few letters, hit *
 | ![File search](docs/files.png) | |
 | **Calculator** | **Commands** |
 | ![Calculator](docs/calc.png) | ![Commands](docs/commands.png) |
+| **Unit conversion** | **Currency** |
+| ![Unit conversion](docs/convert.png) | ![Currency](docs/currency.png) |
+| **Time zones** | **Aliases** |
+| ![Time zones](docs/timezone.png) | ![Alias](docs/alias.png) |
 
 ## Settings
 
@@ -39,9 +45,12 @@ Press **⌥Space** (Alt+Space on Linux) from anywhere, type a few letters, hit *
 | ![General settings](docs/settings-general.png) | ![Hotkey settings](docs/settings-hotkeys.png) |
 | **Snippets** | **Quicklinks** |
 | ![Snippet settings](docs/settings-snippets.png) | ![Quicklink settings](docs/settings-quicklinks.png) |
+| **Aliases** | |
+| ![Alias settings](docs/settings-aliases.png) | |
 
 - **General:** appearance (system, light or dark), search engine (Google, DuckDuckGo, Bing, Kagi, Perplexity), launch at login, clipboard history on or off, history size, and Clear History.
 - **Hotkeys:** click a shortcut and press a new one; it's rebound immediately, and the old one keeps working if the new one is taken. Backspace turns a hotkey off. Every window layout can have one, not just the four with defaults.
+- **Aliases:** an alias and the app or command it opens, by the name it shows in search. A warning appears if nothing has that name.
 - **Snippets and Quicklinks:** add, rename, edit and delete. Changes save as you type.
 
 Everything is saved in `config.json`, which the first run writes with defaults:
@@ -112,6 +121,7 @@ target/release/runecast --tree tree.json --scene calc           # dump the eleme
 - `src/login.rs`: launch at login
 - `src/fuzzy.rs`: fuzzy ranking
 - `src/calc.rs`: the calculator
+- `src/convert.rs`: unit, currency and time zone conversion
 
 ## Roadmap
 
