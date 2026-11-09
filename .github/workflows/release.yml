@@ -1,10 +1,13 @@
 name: Release
 
-# Pushing a tag like v0.2.0 builds Runecast.app (Apple Silicon and Intel in one binary) and a
-# Linux tarball, then publishes them as a GitHub Release.
+# Builds Runecast.app (Apple Silicon and Intel in one binary) and a Linux tarball for a vX.Y.Z tag
+# and publishes them as a GitHub Release. Promote runs this after it tags main; pushing a tag by
+# hand works too.
 #
-# The Mac app is signed and notarized when these repository secrets exist, and ad-hoc signed
-# (macOS warns on first open) when they don't:
+# With these repository secrets the app is signed with a Developer ID and sent to Apple for
+# notarization, and the release is published without waiting for Apple: the Staple workflow
+# staples the ticket and replaces the downloads once Apple accepts the build. Without them the
+# app is ad-hoc signed (macOS warns on first open).
 #   MACOS_CERT_P12        Developer ID Application certificate, base64-encoded .p12
 #   MACOS_CERT_PASSWORD   its password
 #   APPLE_API_KEY         App Store Connect API key, the .p8 file's contents
@@ -14,13 +17,27 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
   macos:
     runs-on: macos-latest
+    outputs:
+      signed: ${{ steps.sign.outputs.signed }}
+      submission: ${{ steps.notarize.outputs.submission }}
     env:
       MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
       MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -29,12 +46,14 @@ jobs:
       APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Check the tag matches Cargo.toml
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Tag $TAG doesn't match Cargo.toml version $version"
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
@@ -89,59 +108,35 @@ jobs:
           plutil -lint "$app/Contents/Info.plist"
 
       - name: Sign
+        id: sign
         run: |
           app=dist/Runecast.app
           if [ -z "$MACOS_CERT_P12" ]; then
             echo "::warning::No Developer ID certificate in secrets; the app is ad-hoc signed and macOS will warn on first open."
             codesign --force --deep --sign - "$app"
-            echo "SIGNED=" >> "$GITHUB_ENV"
           else
-            keychain="$RUNNER_TEMP/release.keychain-db"
-            password=$(openssl rand -hex 16)
-            echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-            security create-keychain -p "$password" "$keychain"
-            security set-keychain-settings -lut 3600 "$keychain"
-            security unlock-keychain -p "$password" "$keychain"
-            security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
-            # The runner lacks Apple's Developer ID G2 intermediate, without which the certificate
-            # isn't trusted and find-identity -v hides it.
-            curl -sSfL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/g2.cer"
-            security import "$RUNNER_TEMP/g2.cer" -k "$keychain"
-            security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
-            # Prepend ours to the search list; the existing keychains are meant to split into arguments.
-            # shellcheck disable=SC2046
-            security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-            rm "$RUNNER_TEMP/cert.p12"
-            identity=$(security find-identity -v -p codesigning "$keychain" | grep -o '"Developer ID Application[^"]*"' | head -1 | tr -d '"')
-            if [ -z "$identity" ]; then
-              security find-identity -p codesigning "$keychain"
-              echo "::error::No valid Developer ID Application identity in the certificate secret."
-              exit 1
-            fi
+            identity=$(.github/scripts/developer-id.sh)
             codesign --force --options runtime --timestamp --sign "$identity" "$app"
-            echo "SIGNED=1" >> "$GITHUB_ENV"
+            echo "IDENTITY=$identity" >> "$GITHUB_ENV"
+            echo "signed=1" >> "$GITHUB_OUTPUT"
           fi
           codesign --verify --strict --verbose=2 "$app"
 
-      - name: Notarize
-        if: env.SIGNED == '1'
+      # Submits without waiting: Apple can take minutes or days, and Staple finishes the job.
+      - name: Send to Apple for notarization
+        id: notarize
+        if: steps.sign.outputs.signed == '1'
         run: |
           printf '%s' "$APPLE_API_KEY" > "$RUNNER_TEMP/key.p8"
           ditto -c -k --keepParent dist/Runecast.app "$RUNNER_TEMP/notarize.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --wait \
-            --key "$RUNNER_TEMP/key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER"
-          xcrun stapler staple dist/Runecast.app
+          submission=$(xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --output-format json \
+            --key "$RUNNER_TEMP/key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" | jq -r .id)
           rm "$RUNNER_TEMP/key.p8"
+          echo "Apple submission: $submission"
+          echo "submission=$submission" >> "$GITHUB_OUTPUT"
 
       - name: Package
-        run: |
-          cd dist
-          ditto -c -k --keepParent Runecast.app "Runecast-$VERSION-macos.zip"
-          mkdir dmg && cp -R Runecast.app dmg/ && ln -s /Applications dmg/Applications
-          hdiutil create -volname Runecast -srcfolder dmg -ov -format UDZO "Runecast-$VERSION-macos.dmg"
-          if [ "$SIGNED" = 1 ]; then
-            codesign --sign "$(codesign -dvv Runecast.app 2>&1 | sed -n 's/^Authority=\(Developer ID Application.*\)/\1/p' | head -1)" --timestamp "Runecast-$VERSION-macos.dmg"
-          fi
+        run: .github/scripts/package-macos.sh "$VERSION"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -153,6 +148,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
 
       - name: Install Linux libraries
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev
@@ -167,8 +164,7 @@ jobs:
 
       - name: Package
         run: |
-          version=${GITHUB_REF_NAME#v}
-          dir=runecast-$version-linux-x86_64
+          dir=runecast-${TAG#v}-linux-x86_64
           mkdir -p "dist/$dir"
           cp target/release/runecast README.md LICENSE "dist/$dir/"
           tar -C dist -czf "dist/$dir.tar.gz" "$dir"
@@ -183,6 +179,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -192,20 +191,26 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          SIGNED: ${{ needs.macos.outputs.signed }}
+          SUBMISSION: ${{ needs.macos.outputs.submission }}
         run: |
-          cat > notes.md <<'EOF'
-          ## Install on macOS
-
-          1. Download `Runecast-…-macos.dmg` and drag Runecast to Applications.
-          2. Open it. Runecast runs in the background with no Dock icon or window; press **⌥Space** to show it.
-          3. In System Settings → Privacy & Security → Accessibility, allow Runecast so it can paste and move windows.
-
-          If macOS says it can't check the app for malicious software, this build isn't notarized yet: open
-          System Settings → Privacy & Security and click **Open Anyway**, or run
-          `xattr -dr com.apple.quarantine /Applications/Runecast.app`.
-
-          ## Install on Linux
-
-          Extract `runecast-…-linux-x86_64.tar.gz` and run `./runecast`. Press **Alt+Space** to show it.
-          EOF
-          gh release create "$GITHUB_REF_NAME" dist/* --title "Runecast $GITHUB_REF_NAME" --notes "$(cat notes.md)" --generate-notes
+          if [ "$SIGNED" = 1 ]; then state=pending; else state=unsigned; fi
+          {
+            echo "## Install on macOS"
+            echo
+            echo "1. Download \`Runecast-…-macos.dmg\` and drag Runecast to Applications."
+            echo "2. Open it. Runecast runs in the background with no Dock icon or window; press **⌥Space** to show it."
+            echo "3. In System Settings → Privacy & Security → Accessibility, allow Runecast so it can paste and move windows."
+            echo
+            .github/scripts/notarization-note.sh print "$state" "$SUBMISSION"
+            echo
+            echo "## Install on Linux"
+            echo
+            echo "Extract \`runecast-…-linux-x86_64.tar.gz\` and run \`./runecast\`. Press **Alt+Space** to show it."
+            echo
+            echo "## What's changed"
+            echo
+            .github/scripts/changelog.sh notes "$TAG"
+          } > notes.md
+          cat notes.md
+          gh release create "$TAG" dist/* --title "Runecast $TAG" --notes-file notes.md --verify-tag

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [dev, main]
   pull_request:
 
 concurrency:
@@ -33,3 +33,31 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+  # Release notes and version bumps are read from commit subjects, so new ones must follow
+  # https://www.conventionalcommits.org/en/v1.0.0/ (and a pull request's title, for squash merges).
+  commits:
+    name: Conventional commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check commit subjects
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          subjects=()
+          if [ -n "$TITLE" ]; then
+            subjects+=("$TITLE")
+          fi
+          # A new branch has no "before" to compare against.
+          if git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            while IFS= read -r subject; do
+              subjects+=("$subject")
+            done < <(git log --no-merges --format=%s "$BASE..$HEAD")
+          fi
+          .github/scripts/changelog.sh lint "${subjects[@]}"

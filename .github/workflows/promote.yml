@@ -1,0 +1,63 @@
+name: Promote
+
+# Releases what's on main (staging). Run it from the Actions tab on main: it picks the next version
+# from the Conventional Commits since the last release (or the bump you choose), commits the
+# version to Cargo.toml, tags vX.Y.Z, merges main back into dev, and runs Release for the tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "auto reads the commits (feat → minor, fix/perf → patch); or pick one"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote
+
+jobs:
+  tag:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump the version and tag
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          version=$(.github/scripts/changelog.sh next-version "$BUMP")
+          sed -i "0,/^version = .*/s//version = \"$version\"/" Cargo.toml
+          sed -i "/^name = \"runecast\"$/{n;s/^version = .*/version = \"$version\"/}" Cargo.lock
+          git diff --stat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v$version"
+          git tag -a "v$version" -m "Runecast v$version"
+          git push --atomic origin HEAD:main "v$version"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Merge main back into dev
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          git fetch origin dev
+          git checkout -B dev origin/dev
+          git merge --no-edit "$TAG^{commit}"
+          git push origin dev
+
+  release:
+    needs: tag
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
+    secrets: inherit

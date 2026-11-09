@@ -1,0 +1,95 @@
+name: Staple
+
+# Finishes releases that Release published before Apple finished notarizing them. Every 30 minutes
+# it asks Apple about each release whose notes still say notarization is pending. Once Apple
+# accepts a build, it staples the ticket to Runecast.app, replaces the release's zip and DMG, and
+# updates the notes. A rejected build fails this workflow and says so in the release notes.
+#
+# GitHub turns scheduled workflows off after 60 days without commits; turn it back on in the
+# Actions tab, or run it from there by hand.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: staple
+
+jobs:
+  pending:
+    runs-on: ubuntu-latest
+    outputs:
+      releases: ${{ steps.find.outputs.releases }}
+    steps:
+      - name: Find releases waiting on Apple
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          releases=$(gh release list --limit 20 --json tagName --jq '.[].tagName' | while read -r tag; do
+            gh release view "$tag" --json body --jq .body | grep -oE 'notarization:pending:[0-9a-f-]+' | head -1 |
+              sed "s/^notarization:pending:/$tag /" || true
+          done | jq -Rnc '[inputs | split(" ") | {tag: .[0], submission: .[1]}]')
+          echo "Waiting on Apple: $releases"
+          echo "releases=$releases" >> "$GITHUB_OUTPUT"
+
+  staple:
+    needs: pending
+    if: needs.pending.outputs.releases != '[]'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJSON(needs.pending.outputs.releases) }}
+    env:
+      TAG: ${{ matrix.release.tag }}
+      SUBMISSION: ${{ matrix.release.submission }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ask Apple
+        id: apple
+        run: |
+          printf '%s' "$APPLE_API_KEY" > "$RUNNER_TEMP/key.p8"
+          status=$(xcrun notarytool info "$SUBMISSION" --output-format json \
+            --key "$RUNNER_TEMP/key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" | jq -r .status)
+          echo "$TAG ($SUBMISSION): $status"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Staple and replace the downloads
+        if: steps.apple.outputs.status == 'Accepted'
+        run: |
+          version=${TAG#v}
+          gh release download "$TAG" --pattern "Runecast-$version-macos.zip" --dir "$RUNNER_TEMP"
+          mkdir dist
+          ditto -x -k "$RUNNER_TEMP/Runecast-$version-macos.zip" dist
+          xcrun stapler staple dist/Runecast.app
+          xcrun stapler validate dist/Runecast.app
+          IDENTITY=$(.github/scripts/developer-id.sh) .github/scripts/package-macos.sh "$version"
+          gh release upload "$TAG" "dist/Runecast-$version-macos.zip" "dist/Runecast-$version-macos.dmg" --clobber
+          .github/scripts/notarization-note.sh set "$TAG" accepted "$SUBMISSION"
+
+      - name: Report the rejection
+        if: steps.apple.outputs.status == 'Invalid' || steps.apple.outputs.status == 'Rejected'
+        run: |
+          xcrun notarytool log "$SUBMISSION" \
+            --key "$RUNNER_TEMP/key.p8" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER" || true
+          .github/scripts/notarization-note.sh set "$TAG" invalid "$SUBMISSION"
+          echo "::error::Apple rejected the notarization of $TAG (submission $SUBMISSION); its log is above."
+          exit 1
+
+      - name: Forget the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/key.p8"
