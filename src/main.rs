@@ -71,9 +71,9 @@ struct State {
     files: Vec<Item>,
     /// Made in `setup`; searches files off the UI thread and lands the newest answer in `poll`.
     file_search: Option<Latest<Vec<PathBuf>>>,
-    /// Plan usage for AI Usage, fetched each time it opens.
-    ai: Vec<ai::Report>,
-    ai_fetch: Option<Latest<Vec<ai::Report>>>,
+    /// Plan usage for AI Usage, kept between openings and fetched again once stale.
+    ai: ai::Readings,
+    ai_fetch: Option<Latest<ai::Fetched>>,
     /// The bundled provider logos, decoded in `setup`.
     ai_logos: Vec<(&'static str, Image)>,
     results: Vec<Item>,
@@ -95,7 +95,7 @@ impl State {
         query.focused = true;
         let mut s = State {
             mode: Mode::Root, query, config, items, history, usage: Usage::default(), rates: convert::Rates::default(), files: Vec::new(), file_search: None,
-            ai: Vec::new(), ai_fetch: None, ai_logos: Vec::new(),
+            ai: ai::Readings::default(), ai_fetch: None, ai_logos: Vec::new(),
             results: Vec::new(), picked: 0,
             icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None,
         };
@@ -114,11 +114,9 @@ impl State {
                 self.files.clear();
             }
         }
-        // Typing "ai usage" fetches the limits once per opening, to pin them above the other rows.
-        if self.mode == Mode::Root && ai::asked_for(&self.query.text) && self.ai.is_empty()
-            && let Some(fetch) = &self.ai_fetch && !fetch.is_pending()
-        {
-            fetch.request((), |_| ai::fetch_all());
+        // Typing "ai usage" pins the limits above the other rows.
+        if self.mode == Mode::Root && ai::asked_for(&self.query.text) {
+            self.fetch_usage();
         }
         self.relist();
         self.picked = 0;
@@ -139,7 +137,7 @@ impl State {
         self.results = match self.mode {
             Mode::Root if ai::asked_for(&self.query.text) => {
                 // The limits stick to the top, each titled with its provider since there are no headings.
-                let limits = ai::items(&self.ai, now as i64).into_iter()
+                let limits = self.ai.items(now as i64).into_iter()
                     .map(|(provider, it)| Item { title: format!("{provider} · {}", it.title), icon: self.app_icon(provider), ..it });
                 limits.chain(catalog::search(&self.items, &self.query.text, &ctx)).collect()
             }
@@ -148,7 +146,7 @@ impl State {
             Mode::Files => self.files.clone(),
             Mode::AiUsage => {
                 let q = self.query.text.trim();
-                ai::items(&self.ai, now as i64).into_iter()
+                self.ai.items(now as i64).into_iter()
                     .filter(|(provider, it)| q.is_empty() || fuzzy::score(q, &format!("{provider} {}", it.title)).is_some())
                     // The installed Claude or ChatGPT app lends its icon.
                     .map(|(provider, it)| Item { icon: self.app_icon(provider), ..it }).collect()
@@ -173,14 +171,19 @@ impl State {
     fn enter(&mut self, mode: Mode) {
         self.mode = mode;
         self.query.replace_text("");
-        if mode == Mode::Root {
-            // So the next "ai usage" reads fresh limits.
-            self.ai.clear();
-        } else if mode == Mode::AiUsage && let Some(fetch) = &self.ai_fetch {
-            self.ai.clear();
-            fetch.request((), |_| ai::fetch_all());
+        if mode == Mode::AiUsage {
+            self.fetch_usage();
         }
         self.refresh();
+    }
+
+    /// Asks the providers whose readings have gone stale, unless a fetch is already out. The last
+    /// readings show meanwhile.
+    fn fetch_usage(&self) {
+        let due = self.ai.due(usage::now() as i64);
+        if let Some(fetch) = &self.ai_fetch && !due.is_empty() && !fetch.is_pending() {
+            fetch.request(due, ai::fetch);
+        }
     }
 
     /// Back to the root list with an empty query, so the next ⌥Space starts fresh.
@@ -270,15 +273,15 @@ fn setup(s: &mut State, waker: Waker) {
 /// A file search or AI usage fetch landed: show it, keeping the selection where it was.
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let hits = s.file_search.as_ref().and_then(Latest::take);
-    let reports = s.ai_fetch.as_ref().and_then(Latest::take);
-    if hits.is_none() && reports.is_none() {
+    let fetched = s.ai_fetch.as_ref().and_then(Latest::take);
+    if hits.is_none() && fetched.is_none() {
         return false;
     }
     if let Some(hits) = hits {
         s.files = hits.iter().map(|p| files::item(p)).collect();
     }
-    if let Some(reports) = reports {
-        s.ai = reports;
+    if let Some(fetched) = fetched {
+        s.ai.update(fetched, usage::now() as i64);
     }
     s.relist();
     true
@@ -446,7 +449,7 @@ fn section(s: &State, i: usize) -> Option<&'static str> {
 /// The provider an AI Usage row belongs to, by the usage page it opens.
 fn provider(s: &State, item: &Item) -> Option<&'static str> {
     let Action::Url(url) = &item.action else { return None };
-    s.ai.iter().find(|r| item.kind == Kind::Usage && r.page == *url).map(|r| r.provider)
+    s.ai.reports.iter().find(|r| item.kind == Kind::Usage && r.page == *url).map(|r| r.provider)
 }
 
 /// The selected clipboard entry in full, with its size underneath.
