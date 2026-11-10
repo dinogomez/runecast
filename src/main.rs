@@ -148,6 +148,8 @@ impl State {
         let chosen = (self.picked > 0).then(|| self.results.get(self.picked))
             .flatten().map(|it| (it.title.clone(), it.subtitle.clone(), it.kind));
         self.results = match self.mode {
+            // "files report" or "folders report" lists only file matches.
+            Mode::Root if files::Scope::of(self.query.text.trim()).0 != files::Scope::Any => self.files.clone(),
             Mode::Root if ai::asked_for(&self.query.text) => {
                 // The limits stick to the top, each titled with its provider since there are no headings.
                 let limits = self.ai.items(now as i64).into_iter()
