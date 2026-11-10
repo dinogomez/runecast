@@ -91,6 +91,9 @@ struct State {
     registry: Option<Arc<Mutex<Registry>>>,
     settings: Option<AppHandle<Settings>>,
     welcome: Option<AppHandle<welcome::Welcome>>,
+    /// When poll's next minute tick is due, in Unix seconds, while clocks are on screen; 0 when no
+    /// tick is scheduled. Keeps it to one timer however often poll runs in between.
+    next_tick: i64,
     /// A newer release, offered in the menu bar until it's picked.
     update: Option<update::Release>,
 }
@@ -103,7 +106,7 @@ impl State {
             mode: Mode::Root, query, config, items, history, usage: Usage::default(), rates: convert::Rates::default(), files: Vec::new(), file_search: None,
             ai: ai::Readings::default(), ai_fetch: None, ai_logos: Vec::new(),
             results: Vec::new(), picked: 0,
-            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None, welcome: None, update: None,
+            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None, welcome: None, update: None, next_tick: 0,
         };
         s.refresh();
         s
@@ -123,6 +126,10 @@ impl State {
         // Typing "ai usage" pins the limits above the other rows.
         if self.mode == Mode::Root && ai::asked_for(&self.query.text) {
             self.fetch_usage();
+        }
+        // Starts poll's minute tick once clocks show.
+        if self.shows_clocks() && self.next_tick == 0 && let Some(me) = &self.me {
+            me.wake();
         }
         self.relist();
         self.picked = 0;
@@ -173,6 +180,11 @@ impl State {
         let same = |it: &Item| chosen.as_ref().is_some_and(|(t, s, k)| it.title == *t && it.subtitle == *s && it.kind == *k);
         self.picked = self.results.iter().position(same).unwrap_or(self.picked.min(self.results.len().saturating_sub(1)));
         self.load_icons();
+    }
+
+    /// Whether clock times are on screen: World Clock, or "time" in the main search.
+    fn shows_clocks(&self) -> bool {
+        self.mode == Mode::Clocks || (self.mode == Mode::Root && !self.config.clocks.is_empty() && convert::asks_for_clocks(&self.query.text))
     }
 
     /// World Clock's rows: an Add row first when the query names a place not listed yet, then the
@@ -283,10 +295,6 @@ impl State {
         self.query.replace_text("");
         if mode == Mode::AiUsage {
             self.fetch_usage();
-        }
-        // Starts poll's minute tick.
-        if mode == Mode::Clocks && let Some(me) = &self.me {
-            me.wake();
         }
         self.refresh();
     }
@@ -412,10 +420,13 @@ fn setup(s: &mut State, waker: Waker) {
 fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     let hits = s.file_search.as_ref().and_then(Latest::take);
     let fetched = s.ai_fetch.as_ref().and_then(Latest::take);
-    let ticking = s.mode == Mode::Clocks && s.me.as_ref().is_some_and(AppHandle::is_visible);
-    if ticking {
-        let second = jiff::Zoned::now().second() as u64;
-        tx.wake_after(std::time::Duration::from_secs(60 - second.min(59)));
+    let ticking = s.shows_clocks() && s.me.as_ref().is_some_and(AppHandle::is_visible);
+    let now = jiff::Timestamp::now().as_second();
+    if !ticking {
+        s.next_tick = 0;
+    } else if now >= s.next_tick {
+        s.next_tick = now - now.rem_euclid(60) + 60;
+        tx.wake_after(std::time::Duration::from_secs((s.next_tick - now) as u64));
     }
     if hits.is_none() && fetched.is_none() && !ticking {
         return false;
@@ -477,6 +488,8 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
             s.query.replace_text("");
             s.refresh();
         }
+        // Before the empty-query Back below, which ⌘⌫ would otherwise also match.
+        Key::Backspace if ev.mods.cmd && s.mode == Mode::Clocks => s.remove_clock(),
         Key::Escape | Key::Backspace if s.mode != Mode::Root && s.query.text.is_empty() => s.reset(),
         Key::Escape => tx.close_window(),
         // ⌘↩ on a file shows it in Finder instead of opening it.
@@ -488,7 +501,6 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
             return true;
         }
         _ if ev.is_command('f') && ev.mods.shift => s.toggle_favorite(),
-        Key::Backspace if ev.mods.cmd && s.mode == Mode::Clocks => s.remove_clock(),
         _ if ev.is_command(',') => {
             s.open_settings(tx);
             return true;
@@ -911,9 +923,11 @@ mod tests {
             s.add_clock(label);
         }
         assert_eq!(s.config.clocks, ["Tokyo", "London", "PST"]);
+        // ⌘⌫ with nothing typed removes the picked place, rather than going back.
         s.picked = 1;
-        s.remove_clock();
-        assert_eq!(s.config.clocks, ["Tokyo", "PST"]);
+        let cmd_backspace = KeyEvent { key: Key::Backspace, mods: rune::Mods { cmd: true, ..Default::default() } };
+        assert!(on_key(&mut s, &cmd_backspace, &mut Tx::default()));
+        assert_eq!((s.mode, s.config.clocks.as_slice()), (Mode::Clocks, ["Tokyo", "PST"].map(String::from).as_slice()));
         assert_eq!(s.results[s.picked].title, "PST");
         // Back in the main search, "time" pins them above everything else.
         s.reset();

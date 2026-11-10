@@ -321,10 +321,12 @@ pub fn asks_for_clocks(query: &str) -> bool {
 /// to here, such as ("4:05 PM", "Tomorrow · 16h ahead").
 pub fn world_clock(zone: &TimeZone, now: &Zoned) -> (String, String) {
     let there = now.with_time_zone(zone.clone());
+    // Across the date line two places can be two days apart; those say the date.
     let day = match there.date().since(now.date()).map(|d| d.get_days()).unwrap_or(0) {
-        1 => "Tomorrow",
-        -1 => "Yesterday",
-        _ => "Today",
+        0 => "Today".to_string(),
+        1 => "Tomorrow".to_string(),
+        -1 => "Yesterday".to_string(),
+        _ => there.strftime("%a %-d %b").to_string(),
     };
     let diff = (there.offset().seconds() - now.offset().seconds()) / 60;
     let (h, m) = (diff.abs() / 60, diff.abs() % 60);
@@ -513,6 +515,9 @@ mod tests {
         assert_eq!(at("singapore"), ("10:30 PM".into(), "Today · same time as here".into()));
         let early: Zoned = "2026-11-10T01:00:00+08:00[Asia/Manila]".parse().unwrap();
         assert_eq!(world_clock(&clock_zone("london").unwrap().0, &early).1, "Yesterday · 8h behind");
+        // Across the date line: 11:30 PM on the 10th in Pago Pago is 12:30 AM on the 12th in Kiritimati.
+        let pago: Zoned = "2026-11-10T23:30:00-11:00[Pacific/Pago_Pago]".parse().unwrap();
+        assert_eq!(world_clock(&clock_zone("kiritimati").unwrap().0, &pago), ("12:30 AM".into(), "Thu 12 Nov · 25h ahead".into()));
     }
 
     #[test]
