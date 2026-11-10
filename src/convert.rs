@@ -231,7 +231,7 @@ fn zone(name: &str) -> Option<(TimeZone, String)> {
     // Where an abbreviation means several zones, the one people most likely mean: IST is India,
     // CST and AST are North American, BST is British, AMT is Armenia.
     let hours = match name {
-        "utc" | "gmt" | "z" | "ut" | "wet" | "azost" => Some(0.0),
+        "utc" | "gmt" | "z" | "ut" | "wet" | "azost" | "egst" => Some(0.0),
         "lint" => Some(14.0), "tot" | "nzdt" | "phot" | "tkt" => Some(13.0), "chast" => Some(12.75),
         "nzst" | "fjt" | "mht" | "tvt" | "gilt" | "pett" | "anat" | "wakt" | "nrt" => Some(12.0),
         "sbt" | "nct" | "magt" | "vut" | "sakt" | "srett" | "nft" | "kost" | "pont" => Some(11.0),
@@ -248,9 +248,9 @@ fn zone(name: &str) -> Option<(TimeZone, String)> {
         "msk" | "trt" | "eat" | "eest" | "idt" | "fet" | "syot" => Some(3.0),
         "eet" | "cest" | "mest" | "cat" | "sast" => Some(2.0),
         "cet" | "met" | "bst" | "west" | "wat" => Some(1.0),
-        "azot" | "cvt" | "egt" => Some(-1.0), "fnt" | "brst" | "pmdt" | "uyst" | "egst" => Some(-2.0),
+        "azot" | "cvt" | "egt" => Some(-1.0), "fnt" | "brst" | "pmdt" | "uyst" | "wgt" => Some(-2.0),
         "ndt" => Some(-2.5),
-        "art" | "brt" | "adt" | "clst" | "pyst" | "uyt" | "gft" | "srt" | "fkst" | "pmst" | "wgt" | "rott" => Some(-3.0),
+        "art" | "brt" | "adt" | "clst" | "pyst" | "uyt" | "gft" | "srt" | "fkst" | "pmst" | "rott" => Some(-3.0),
         "nst" => Some(-3.5),
         "ast" | "edt" | "clt" | "vet" | "bot" | "pyt" | "gyt" | "fkt" => Some(-4.0),
         "est" | "cdt" | "cot" | "pet" | "ect" | "acrt" | "easst" => Some(-5.0),
@@ -461,6 +461,8 @@ mod tests {
         assert_eq!(title("2:45pm to tashkent").as_deref(), Some("11:45 AM"));
         assert_eq!(title("2:45pm to gmt-3").as_deref(), Some("3:45 AM"));
         assert_eq!(title("2:45pm to npt").as_deref(), Some("12:30 PM"));
+        assert_eq!(title("noon egst to utc").as_deref(), Some("12:00 PM"));
+        assert_eq!(title("noon wgt to utc").as_deref(), Some("2:00 PM"));
         let answer = convert("2:45pm to utc+5:30", &Rates::demo(), &now()).unwrap();
         assert_eq!((answer.title.as_str(), answer.subtitle.as_str()), ("12:15 PM", "2:45 PM here in UTC+5:30 · Mon 9 Nov"));
         // An offset on the time's side too; 9:00 at +5:45 is 03:15 UTC.
