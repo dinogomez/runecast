@@ -286,6 +286,21 @@ impl State {
     }
 }
 
+impl State {
+    /// Offers `release` at the top of the menu bar menu.
+    fn offer_update(&mut self, release: update::Release) {
+        menubar::offer_update(&release.label());
+        self.update = Some(release);
+    }
+
+    /// Installs the offered release, from the menu bar or Settings.
+    fn install_update(&mut self) {
+        if let Some(me) = self.me.clone() && let Some(release) = self.update.take() {
+            update::install(release, me);
+        }
+    }
+}
+
 fn clip_item(text: &str) -> Item {
     let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
     Item::new(first, "", Kind::Clip, Action::Paste(text.to_string()))
@@ -687,6 +702,7 @@ fn main() {
         let settings_spec = AppSpec {
             scenes: settings::SCENES,
             setup: Some(settings::setup),
+            poll: Some(settings::poll),
             min_size: Some((640.0, 460.0)),
             ..AppSpec::new("Runecast Settings", settings::SIZE, || unreachable!(), settings::view)
         };
@@ -722,10 +738,7 @@ fn main() {
                 }
                 let rates = me.clone();
                 convert::refresh_in_background(s.rates.is_stale(usage::now()), move |r| rates.update(move |s, _| s.rates = r));
-                update::check_in_background(move |release| me.update(move |s, _| {
-                    menubar::offer_update(&release.label());
-                    s.update = Some(release);
-                }));
+                update::check_in_background(move |release| me.update(move |s, _| s.offer_update(release)));
             }
         });
         let launcher_handle = launcher.handle();

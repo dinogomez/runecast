@@ -56,12 +56,7 @@ fn run(launcher: &AppHandle<State>, pick: Pick) {
         Pick::Open => launcher.update(|s, _| s.open(Mode::Root)),
         Pick::Clipboard => launcher.update(|s, _| s.open(Mode::Clipboard)),
         Pick::Files => launcher.update(|s, _| s.open(Mode::Files)),
-        Pick::Update => {
-            let me = launcher.clone();
-            launcher.update(move |s, _| if let Some(release) = s.update.take() {
-                crate::update::install(release, me);
-            });
-        }
+        Pick::Update => launcher.update(|s, _| s.install_update()),
     }
 }
 
