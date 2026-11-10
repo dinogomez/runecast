@@ -41,6 +41,7 @@ target/release/runecast --tree tree.json --scene calc           # dump the eleme
 |---|---|
 | `src/main.rs` | The launcher window and view |
 | `src/settings.rs` | The Settings window |
+| `src/welcome.rs` | The Welcome window shown on first launch |
 | `src/catalog.rs` | Apps, commands, snippets, quicklinks, web search and how each runs |
 | `src/hotkeys.rs` | Global hotkeys and their registration |
 | `src/clipboard.rs` | Clipboard watcher and history |

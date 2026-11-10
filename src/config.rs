@@ -23,6 +23,8 @@ pub struct Config {
     /// The items an empty query lists first, in this order. ⌘⇧F in the launcher adds the selected
     /// item or takes it off.
     pub favorites: Vec<Favorite>,
+    /// The places World Clock lists, in this order, by the label `convert::clock_zone` gives them.
+    pub clocks: Vec<String>,
 }
 
 /// A launcher item by its title and kind, so an app and a snippet with one name stay apart.

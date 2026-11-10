@@ -23,6 +23,7 @@ mod menubar;
 mod settings;
 mod update;
 mod usage;
+mod welcome;
 mod wm;
 
 use std::collections::HashMap;
@@ -57,6 +58,7 @@ enum Mode {
     Clipboard,
     Files,
     AiUsage,
+    Clocks,
 }
 
 struct State {
@@ -88,6 +90,10 @@ struct State {
     me: Option<AppHandle<State>>,
     registry: Option<Arc<Mutex<Registry>>>,
     settings: Option<AppHandle<Settings>>,
+    welcome: Option<AppHandle<welcome::Welcome>>,
+    /// When poll's next minute tick is due, in Unix seconds, while clocks are on screen; 0 when no
+    /// tick is scheduled. Keeps it to one timer however often poll runs in between.
+    next_tick: i64,
     /// A newer release, offered in the menu bar until it's picked.
     update: Option<update::Release>,
 }
@@ -100,7 +106,7 @@ impl State {
             mode: Mode::Root, query, config, items, history, usage: Usage::default(), rates: convert::Rates::default(), files: Vec::new(), file_search: None,
             ai: ai::Readings::default(), ai_fetch: None, ai_logos: Vec::new(),
             results: Vec::new(), picked: 0,
-            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None, update: None,
+            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None, welcome: None, update: None, next_tick: 0,
         };
         s.refresh();
         s
@@ -120,6 +126,10 @@ impl State {
         // Typing "ai usage" pins the limits above the other rows.
         if self.mode == Mode::Root && ai::asked_for(&self.query.text) {
             self.fetch_usage();
+        }
+        // Starts poll's minute tick once clocks show.
+        if self.shows_clocks() && self.next_tick == 0 && let Some(me) = &self.me {
+            me.wake();
         }
         self.relist();
         self.picked = 0;
@@ -144,6 +154,17 @@ impl State {
                     .map(|(provider, it)| Item { title: format!("{provider} · {}", it.title), icon: self.app_icon(provider), ..it });
                 limits.chain(catalog::search(&self.items, &self.query.text, &ctx)).collect()
             }
+            // Typing "time" pins the World Clock's places, or the command to add some.
+            Mode::Root if convert::asks_for_clocks(&self.query.text) => {
+                let pinned: Vec<Item> = if self.config.clocks.is_empty() {
+                    self.items.iter().filter(|it| matches!(it.action, Action::WorldClock)).cloned().collect()
+                } else {
+                    self.saved_clocks(&clock).collect()
+                };
+                let rest = catalog::search(&self.items, &self.query.text, &ctx).into_iter()
+                    .filter(|it| !matches!(it.action, Action::WorldClock) || !self.config.clocks.is_empty());
+                pinned.into_iter().chain(rest).collect()
+            }
             Mode::Root => catalog::search(&self.items, &self.query.text, &ctx),
             Mode::Clipboard => self.history.search(&self.query.text).into_iter().map(|t| clip_item(t)).collect(),
             Mode::Files => self.files.clone(),
@@ -154,10 +175,59 @@ impl State {
                     // The installed Claude or ChatGPT app lends its icon.
                     .map(|(provider, it)| Item { icon: self.app_icon(provider), ..it }).collect()
             }
+            Mode::Clocks => self.clock_rows(&clock),
         };
         let same = |it: &Item| chosen.as_ref().is_some_and(|(t, s, k)| it.title == *t && it.subtitle == *s && it.kind == *k);
         self.picked = self.results.iter().position(same).unwrap_or(self.picked.min(self.results.len().saturating_sub(1)));
         self.load_icons();
+    }
+
+    /// Whether clock times are on screen: World Clock, or "time" in the main search.
+    fn shows_clocks(&self) -> bool {
+        self.mode == Mode::Clocks || (self.mode == Mode::Root && !self.config.clocks.is_empty() && convert::asks_for_clocks(&self.query.text))
+    }
+
+    /// World Clock's rows: an Add row first when the query names a place not listed yet, then the
+    /// saved places the query matches, each with its time.
+    fn clock_rows(&self, now: &jiff::Zoned) -> Vec<Item> {
+        let q = self.query.text.trim();
+        let listed = |label: &str| self.config.clocks.iter().any(|c| c.eq_ignore_ascii_case(label));
+        let new = convert::clock_zone(q).filter(|(_, label)| !q.is_empty() && !listed(label)).map(|(tz, label)| {
+            let (time, _) = convert::world_clock(&tz, now);
+            Item { value: Some(time), ..Item::new(format!("Add {label}"), "to World Clock", Kind::Clock, Action::AddClock(label)) }
+        });
+        let saved = self.saved_clocks(now).filter(|it| q.is_empty() || fuzzy::score(q, &it.title).is_some());
+        new.into_iter().chain(saved).collect()
+    }
+
+    /// A row per saved place, with its time; ↩ copies it.
+    fn saved_clocks<'a>(&'a self, now: &'a jiff::Zoned) -> impl Iterator<Item = Item> + 'a {
+        self.config.clocks.iter().filter_map(move |label| {
+            let (tz, label) = convert::clock_zone(label)?;
+            let (time, when) = convert::world_clock(&tz, now);
+            let copy = format!("{time} in {label}");
+            Some(Item { value: Some(time), ..Item::new(label, when, Kind::Clock, Action::Copy(copy)) })
+        })
+    }
+
+    /// Adds a place to World Clock, and clears the query to show it in the list.
+    fn add_clock(&mut self, label: String) {
+        self.config.clocks.push(label.clone());
+        self.query.replace_text("");
+        self.lists_changed();
+        self.refresh();
+        self.picked = self.results.iter().position(|it| it.title == label).unwrap_or(0);
+    }
+
+    /// ⌘⌫ in World Clock: takes the selected place off.
+    fn remove_clock(&mut self) {
+        let Some(Item { action: Action::Copy(_), kind: Kind::Clock, title, .. }) = self.results.get(self.picked) else { return };
+        let title = title.clone();
+        self.config.clocks.retain(|c| !c.eq_ignore_ascii_case(&title));
+        self.lists_changed();
+        let picked = self.picked;
+        self.relist();
+        self.picked = picked.min(self.results.len().saturating_sub(1));
     }
 
     /// ⌘⇧F: puts the selected row in Favorites, or takes it off, keeping it selected.
@@ -192,16 +262,21 @@ impl State {
 
     /// Saves the favorites, lists them again, and keeps the row titled `title` selected.
     fn favorites_changed(&mut self, title: &str, kind: Kind) {
+        self.lists_changed();
+        self.relist();
+        self.picked = self.results.iter().position(|it| it.title == title && it.kind == kind).unwrap_or(0);
+    }
+
+    /// Saves the favorites and clocks the launcher edits, and hands them to Settings so its next
+    /// save keeps them.
+    fn lists_changed(&mut self) {
         if self.me.is_some() {
             config::save(&self.config);
         }
-        // So Settings' next save keeps them.
         if let Some(settings) = &self.settings {
-            let favorites = self.config.favorites.clone();
-            settings.update(move |s, _| s.config.favorites = favorites);
+            let (favorites, clocks) = (self.config.favorites.clone(), self.config.clocks.clone());
+            settings.update(move |s, _| (s.config.favorites, s.config.clocks) = (favorites, clocks));
         }
-        self.relist();
-        self.picked = self.results.iter().position(|it| it.title == title && it.kind == kind).unwrap_or(0);
     }
 
     fn app_icon(&self, name: &str) -> Option<PathBuf> {
@@ -287,6 +362,14 @@ impl State {
 }
 
 impl State {
+    /// Brings up the Welcome window, on the first launch or from the menu bar.
+    fn show_welcome(&mut self) {
+        if let Some(welcome) = &self.welcome {
+            welcome.update(|s, _| s.reload());
+            welcome.open();
+        }
+    }
+
     /// Offers `release` at the top of the menu bar menu.
     fn offer_update(&mut self, release: update::Release) {
         menubar::offer_update(&release.label());
@@ -332,11 +415,20 @@ fn setup(s: &mut State, waker: Waker) {
     }
 }
 
-/// A file search or AI usage fetch landed: show it, keeping the selection where it was.
-fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
+/// A file search or AI usage fetch landed, or World Clock's minute turned: show it, keeping the
+/// selection where it was.
+fn poll(s: &mut State, _: f64, tx: &mut Tx) -> bool {
     let hits = s.file_search.as_ref().and_then(Latest::take);
     let fetched = s.ai_fetch.as_ref().and_then(Latest::take);
-    if hits.is_none() && fetched.is_none() {
+    let ticking = s.shows_clocks() && s.me.as_ref().is_some_and(AppHandle::is_visible);
+    let now = jiff::Timestamp::now().as_second();
+    if !ticking {
+        s.next_tick = 0;
+    } else if now >= s.next_tick {
+        s.next_tick = now - now.rem_euclid(60) + 60;
+        tx.wake_after(std::time::Duration::from_secs((s.next_tick - now) as u64));
+    }
+    if hits.is_none() && fetched.is_none() && !ticking {
         return false;
     }
     if let Some(hits) = hits {
@@ -352,7 +444,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
 fn run_picked(s: &mut State, tx: &mut Tx) {
     let Some(item) = s.results.get(s.picked).cloned() else { return };
     // Rows that are answers to this query rather than things to come back to don't count.
-    if !matches!(item.kind, Kind::Calculator | Kind::Web | Kind::Clip | Kind::Usage) && s.me.is_some() {
+    if !matches!(item.kind, Kind::Calculator | Kind::Web | Kind::Clip | Kind::Usage | Kind::Clock) && s.me.is_some() {
         s.usage.record(&item, usage::now());
         s.usage.save();
     }
@@ -376,6 +468,8 @@ fn run_picked(s: &mut State, tx: &mut Tx) {
         Action::ClipboardHistory => return s.enter(Mode::Clipboard),
         Action::FileSearch => return s.enter(Mode::Files),
         Action::AiUsage => return s.enter(Mode::AiUsage),
+        Action::WorldClock => return s.enter(Mode::Clocks),
+        Action::AddClock(label) => return s.add_clock(label),
         Action::Settings => return s.open_settings(tx),
         Action::Quit => return tx.quit(),
         action => catalog::spawn(&action),
@@ -394,6 +488,8 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
             s.query.replace_text("");
             s.refresh();
         }
+        // Before the empty-query Back below, which ⌘⌫ would otherwise also match.
+        Key::Backspace if ev.mods.cmd && s.mode == Mode::Clocks => s.remove_clock(),
         Key::Escape | Key::Backspace if s.mode != Mode::Root && s.query.text.is_empty() => s.reset(),
         Key::Escape => tx.close_window(),
         // ⌘↩ on a file shows it in Finder instead of opening it.
@@ -425,6 +521,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         Mode::Clipboard => "Search clipboard history…",
         Mode::Files => "Search files by name…",
         Mode::AiUsage => "Filter AI usage…",
+        Mode::Clocks => "Add a city or time zone, or filter…",
     };
     let field = text_input(&s.query, TextStyle::new(19.0, 400.0).lh(28.0)).key("query").single_line().grow(1.0)
         .color(t.text).placeholder(placeholder, t.text_secondary.alpha(0.8))
@@ -439,6 +536,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         Mode::Clipboard => Some("Clipboard History"),
         Mode::Files => Some("Search Files"),
         Mode::AiUsage => Some("AI Usage"),
+        Mode::Clocks => Some("World Clock"),
     };
     if let Some(chip) = chip {
         search = search.child(row().h(26.0).px(10.0).radius(7.0).center().fill(accent.alpha(0.2))
@@ -467,6 +565,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         Mode::Clipboard if s.history.entries.is_empty() => "Nothing copied yet",
         Mode::Files if s.query.text.trim().chars().count() < files::MIN_QUERY => "Type a file name",
         Mode::AiUsage if s.ai_fetch.as_ref().is_some_and(Latest::is_pending) => "Checking usage…",
+        Mode::Clocks if s.config.clocks.is_empty() && s.query.text.trim().is_empty() => "Type a city, like Tokyo, to add its clock",
+        Mode::Clocks if s.query.text.trim().is_empty() => "No places",
+        Mode::Clocks => "No place by that name",
         _ => "No results",
     };
     let list = if s.results.is_empty() {
@@ -476,18 +577,28 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
 
     let body = match s.mode {
-        Mode::Root | Mode::Files | Mode::AiUsage => row().w_full().grow(1.0).min_h(0.0).child(list),
+        Mode::Root | Mode::Files | Mode::AiUsage | Mode::Clocks => row().w_full().grow(1.0).min_h(0.0).child(list),
         Mode::Clipboard => row().w_full().grow(1.0).min_h(0.0)
             .child(col().w(300.0).h_full().min_h(0.0).child(list))
             .child(el().w(1.0).h_full().fill(t.separator))
             .child(preview(s.results.get(s.picked), &t)),
     };
 
-    let action = s.results.get(s.picked).map_or("", |it| it.kind.verb());
-    let footer = row().h(FOOTER_H).px(16.0).gap(10.0).center_y().fill(t.bg.alpha(0.5))
+    let picked = s.results.get(s.picked);
+    let action = match picked.map(|it| &it.action) {
+        Some(Action::AddClock(_)) => "Add Clock",
+        _ => picked.map_or("", |it| it.kind.verb()),
+    };
+    let mut footer = row().h(FOOTER_H).px(16.0).gap(10.0).center_y().fill(t.bg.alpha(0.5))
         .child(mark(s.logo.as_ref(), 16.0, accent))
         .child(text("Runecast").font(type_::LABEL).color(t.text_secondary))
-        .child(spacer())
+        .child(spacer());
+    if s.mode == Mode::Clocks && matches!(picked, Some(Item { action: Action::Copy(_), kind: Kind::Clock, .. })) {
+        footer = footer.child(text("Remove").font(type_::LABEL).color(t.text_secondary))
+            .child(keycap(if cfg!(target_os = "macos") { "⌘⌫" } else { "Ctrl+⌫" }, &t))
+            .child(el().w(1.0).h(16.0).fill(t.separator));
+    }
+    let footer = footer
         .child(text(action).font(type_::LABEL).color(t.text))
         .child(keycap("↩", &t))
         .child(el().w(1.0).h(16.0).fill(t.separator))
@@ -565,6 +676,9 @@ fn result_row(item: &Item, icon: Option<&Image>, on: bool, compact: bool, dark: 
         return r.child(row().w(120.0).h(4.0).radius(2.0).fill(t.control_off)
                 .child(el().w_frac((left / 100.0) as f32).h_full().radius(2.0).fill(ink)))
             .child(row().w(64.0).justify_end().child(text(format!("{left:.0}% left")).font(type_::LABEL).color(t.text_secondary)));
+    }
+    if let Some(value) = &item.value {
+        return r.child(text(value.clone()).font(TextStyle::new(15.0, 600.0)).color(t.text));
     }
     if let Some(hotkey) = &item.hotkey {
         r = r.child(keycap(hotkey.clone(), t));
@@ -686,6 +800,21 @@ const SCENES: &[(&str, fn(&mut State))] = &[
         s.ai = ai::demo(usage::now() as i64);
         s.relist();
     }),
+    ("clocks", |s| {
+        scene(s, Mode::Clocks, "");
+        s.config.clocks = ["Tokyo", "London", "New York", "UTC+5:30"].map(String::from).to_vec();
+        s.relist();
+    }),
+    ("clocks-root", |s| {
+        scene(s, Mode::Root, "time");
+        s.config.clocks = ["Tokyo", "London", "New York", "UTC+5:30"].map(String::from).to_vec();
+        s.relist();
+    }),
+    ("clocks-add", |s| {
+        scene(s, Mode::Clocks, "buenos aires");
+        s.config.clocks = ["Tokyo", "London"].map(String::from).to_vec();
+        s.relist();
+    }),
     ("installed", installed),
 ];
 
@@ -707,7 +836,15 @@ fn main() {
             ..AppSpec::new("Runecast Settings", settings::SIZE, || unreachable!(), settings::view)
         };
         let settings = App::new(settings_spec).windowless().keep_running().titlebar(Titlebar::new(settings::TITLEBAR));
-        let (me, settings_handle) = (launcher.handle(), settings.handle());
+        let welcome_spec = AppSpec {
+            scenes: welcome::SCENES,
+            setup: Some(welcome::setup),
+            poll: Some(welcome::poll),
+            ..AppSpec::new("Welcome to Runecast", welcome::SIZE, || unreachable!(), welcome::view)
+        };
+        let welcome = App::new(welcome_spec).windowless().keep_running().titlebar(Titlebar::new(welcome::TITLEBAR))
+            .on_close(welcome::on_close);
+        let (me, settings_handle, welcome_handle) = (launcher.handle(), settings.handle(), welcome.handle());
         let registry = Arc::new(Mutex::new(Registry::new(me.clone())));
 
         let shared = registry.clone();
@@ -721,6 +858,7 @@ fn main() {
                 s.relist();
                 s.registry = Some(shared);
                 s.settings = Some(settings_handle);
+                s.welcome = Some(welcome_handle);
                 s
             })
             .on_focus(|s, focused, tx| if !focused {
@@ -739,15 +877,22 @@ fn main() {
                 let rates = me.clone();
                 convert::refresh_in_background(s.rates.is_stale(usage::now()), move |r| rates.update(move |s, _| s.rates = r));
                 update::check_in_background(move |release| me.update(move |s, _| s.offer_update(release)));
+                if !welcome::seen() {
+                    welcome::mark_seen();
+                    s.show_welcome();
+                }
             }
         });
         let launcher_handle = launcher.handle();
         let settings = settings.init(move || Settings::new(config::load(), Some(registry), Some(launcher_handle)));
+        let (launcher_handle, me) = (launcher.handle(), welcome.handle());
+        let welcome = welcome.init(move || welcome::Welcome::new(Some(launcher_handle), Some(me)));
 
         let options = WindowOptions::launcher_panel().macos(|native| native.corner_radius(14.0));
         let windows: Vec<rune::AnyWindowSpec> = vec![
             WindowSpec::from_app("launcher", launcher).configured_options(options).into(),
             WindowSpec::from_app("settings", settings).into(),
+            WindowSpec::from_app("welcome", welcome).into(),
         ];
         windows
     });
@@ -756,6 +901,41 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn world_clock_adds_a_typed_place_once_and_removes_the_picked_one() {
+        let mut s = State::new(config::example(), demo_items(), demo_history());
+        s.enter(Mode::Clocks);
+        s.query.replace_text("tokyo");
+        s.refresh();
+        let Action::AddClock(label) = s.results[0].action.clone() else { panic!("no Add row: {:?}", s.results) };
+        s.add_clock(label);
+        assert_eq!(s.config.clocks, ["Tokyo"]);
+        assert_eq!((s.results.len(), s.results[0].title.as_str()), (1, "Tokyo"));
+        // Listed already, in any case: no second Add row.
+        s.query.replace_text("TOKYO");
+        s.refresh();
+        assert!(s.results.iter().all(|it| !matches!(it.action, Action::AddClock(_))));
+        for place in ["london", "pst"] {
+            s.query.replace_text(place);
+            s.refresh();
+            let Action::AddClock(label) = s.results[0].action.clone() else { panic!() };
+            s.add_clock(label);
+        }
+        assert_eq!(s.config.clocks, ["Tokyo", "London", "PST"]);
+        // ⌘⌫ with nothing typed removes the picked place, rather than going back.
+        s.picked = 1;
+        let cmd_backspace = KeyEvent { key: Key::Backspace, mods: rune::Mods { cmd: true, ..Default::default() } };
+        assert!(on_key(&mut s, &cmd_backspace, &mut Tx::default()));
+        assert_eq!((s.mode, s.config.clocks.as_slice()), (Mode::Clocks, ["Tokyo", "PST"].map(String::from).as_slice()));
+        assert_eq!(s.results[s.picked].title, "PST");
+        // Back in the main search, "time" pins them above everything else.
+        s.reset();
+        s.query.replace_text("time");
+        s.refresh();
+        let titles: Vec<_> = s.results.iter().take(2).map(|it| (it.title.as_str(), it.kind)).collect();
+        assert_eq!(titles, [("Tokyo", Kind::Clock), ("PST", Kind::Clock)]);
+    }
 
     #[test]
     fn rows_landing_above_keep_the_users_pick() {

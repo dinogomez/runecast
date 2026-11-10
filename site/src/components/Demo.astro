@@ -40,6 +40,7 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     keys?: string;
     kind?: string;
     left?: number; // percent of a limit left, drawn as a meter instead of the kind
+    value?: string; // a world clock's time, drawn large instead of the kind
   };
   type Scene = { caption: string; query: string; showAt?: number; action: string; rows: Row[] };
 
@@ -52,6 +53,7 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     snippet: [2, '<path d="M17 5H3"/><path d="M21 12H8"/><path d="M21 19H8"/><path d="M3 12v7"/>'],
     calc: [3, '<rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16" y1="14" y2="18"/><path d="M16 10h.01"/><path d="M12 10h.01"/><path d="M8 10h.01"/><path d="M12 14h.01"/><path d="M8 14h.01"/><path d="M12 18h.01"/><path d="M8 18h.01"/>'],
     link: [4, '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>'],
+    clock: [4, '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>'],
     command: [5, '<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>'],
   };
   const eq = "calc";
@@ -159,6 +161,18 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
       rows: [{ icon: eq, title: "12:45 AM (next day)", subtitle: "2:45 PM EST in UTC+5 · Tue 10 Nov", kind: "Copy" }],
     },
     {
+      caption: "Keep a world clock: type “time”",
+      query: "time",
+      showAt: 3,
+      action: "Copy Time",
+      rows: [
+        { icon: "clock", title: "Tokyo", subtitle: "Tomorrow · 1h ahead", value: "12:45 AM" },
+        { icon: "clock", title: "London", subtitle: "Today · 8h behind", value: "3:45 PM" },
+        { icon: "clock", title: "New York", subtitle: "Today · 13h behind", value: "10:45 AM" },
+        { icon: "clock", title: "Bengaluru", subtitle: "Today · 2h 30m behind", value: "9:15 PM" },
+      ],
+    },
+    {
       caption: "Quicklinks with arguments",
       query: "gh rune",
       action: "Open Quicklink",
@@ -219,8 +233,9 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
       ? `<img class="appicon" src="${row.icon.slice(4)}" alt="">`
       : `<span class="tile" style="background:var(--hue-${symbols[row.icon][0]})"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${symbols[row.icon][1]}</svg></span>`;
     // Like the app, a limit turns pink once less than 15% is left.
-    const end =
-      row.left === undefined
+    const end = row.value
+      ? `<span class="value">${escape(row.value)}</span>`
+      : row.left === undefined
         ? `${row.keys ? `<kbd>${escape(row.keys)}</kbd>` : ""}<span class="kind">${row.kind}</span>`
         : `<span class="meter${row.left < 15 ? " low" : ""}"><i style="width:${row.left}%"></i></span><span class="left">${row.left}% left</span>`;
     return `<li class="${selected ? "selected" : ""}">${tile}<b>${escape(row.title)}</b>${
@@ -535,6 +550,12 @@ const chatgptIcon = await getImage({ src: chatgpt, width: 64 });
     color: var(--p-muted2);
     font: inherit;
     font-size: 13px;
+  }
+
+  .rows :global(.value) {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--p-text);
   }
 
   .rows :global(.kind) {

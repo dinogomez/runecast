@@ -49,6 +49,7 @@ static FILE: Icon = lucide!(
     "file-text",
     r#"<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>"#
 );
+static CLOCK: Icon = lucide!("clock", r#"<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>"#);
 static GAUGE: Icon = lucide!("gauge", r#"<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>"#);
 
 /// The symbol for `kind` and the `tok::accent` hue of its tile; `None` for apps, which show their
@@ -60,6 +61,7 @@ pub fn for_kind(kind: Kind) -> Option<(&'static Icon, usize)> {
         Kind::File => (&FILE, 0),
         Kind::Window => (&WINDOW, 1),
         Kind::Usage => (&GAUGE, 1),
+        Kind::Clock => (&CLOCK, 4),
         Kind::Snippet => (&SNIPPET, 2),
         Kind::Calculator => (&CALCULATOR, 3),
         Kind::Quicklink => (&LINK, 4),

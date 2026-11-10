@@ -304,9 +304,19 @@ impl Settings {
     }
 }
 
+/// Rune's neutral kit, with an off switch's track dark enough to see on the light page (it's
+/// the only control that reads `layer_04`).
+pub fn kit(dark: bool) -> Kit {
+    let mut k = Kit::neutral(dark);
+    if !dark {
+        k.c.layer_04 = k.c.page.mix(k.c.black, 0.42);
+    }
+    k
+}
+
 pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     let dark = s.config.general.appearance.dark(cx.system_dark());
-    let k = Kit::neutral(dark);
+    let k = kit(dark);
     let mut layer = Vec::new();
     // What the window controls take: the traffic lights on macOS, nothing where the native
     // titlebar stays.

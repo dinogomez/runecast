@@ -36,6 +36,7 @@
 | 🧮 | Calculator and conversions | `(1200+340)*1.12`, `100 usd to php`, `3pm pst in manila` |
 | ⚙️ | System commands | `dark`, `volume`, `quit Safari` |
 | 🏷️ | Aliases for any app or command | `vs` |
+| 🕒 | World clock: the time in the places you add | `World Clock`, then type `Tokyo` |
 | 📊 | Claude and ChatGPT plan usage left, from the Claude Code and Codex sign-in | `AI Usage` |
 | <img src="assets/tray.png" width="16" height="16" alt="Runecast icon"> | Menu bar icon (tray on Linux) | |
 
@@ -46,14 +47,14 @@ Anything else falls back to a web search.
 | ![Clipboard history](docs/clipboard.png) | ![Window management](docs/windows.png) |
 | **Calculator** | **Time zones** |
 | ![Calculator](docs/calc.png) | ![Time zones](docs/timezone.png) |
-| **AI usage** | |
-| ![AI usage](docs/ai-usage.png) | |
+| **AI usage** | **World clock** |
+| ![AI usage](docs/ai-usage.png) | ![World clock](docs/clocks.png) |
 
 ## Install
 
 Download the `.dmg` (macOS) or `.tar.gz` (Linux) from [Releases](https://github.com/dinogomez/runecast/releases). The release notes cover first-launch steps.
 
-On macOS, grant Runecast **Accessibility** permission (System Settings → Privacy & Security) so it can paste and move windows.
+On first launch a Welcome window shows the hotkey and, on macOS, asks for the **Accessibility** permission Runecast needs to paste and move windows. Open it again from the menu bar icon.
 
 Runecast checks for new releases daily. When one is out, the menu bar icon's menu offers it at the top: on macOS it installs the update and relaunches; on Linux it opens the release page.
 
