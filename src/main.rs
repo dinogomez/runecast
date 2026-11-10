@@ -165,9 +165,9 @@ impl State {
             return;
         }
         let (title, kind) = (item.title.clone(), item.kind);
-        match self.config.favorites.iter().position(|f| f.eq_ignore_ascii_case(&title)) {
+        match self.config.favorites.iter().position(|f| f.is(item)) {
             Some(i) => _ = self.config.favorites.remove(i),
-            None => self.config.favorites.push(title.clone()),
+            None => self.config.favorites.push(config::Favorite::of(item)),
         }
         self.favorites_changed(&title, kind);
     }
@@ -178,9 +178,9 @@ impl State {
         let Some(item) = self.results.get(self.picked).filter(|_| self.mode == Mode::Root && self.query.text.trim().is_empty()) else { return };
         let (title, kind) = (item.title.clone(), item.kind);
         let list = &self.config.favorites;
-        let Some(i) = list.iter().position(|f| f.eq_ignore_ascii_case(&title)) else { return };
+        let Some(i) = list.iter().position(|f| f.is(item)) else { return };
         // Skip past favorites whose app is gone, so every press visibly moves the row.
-        let shown = |j: &usize| self.items.iter().any(|it| it.title.eq_ignore_ascii_case(&list[*j]));
+        let shown = |j: &usize| self.items.iter().any(|it| list[*j].is(it));
         let Some(j) = (if up { (0..i).rev().find(shown) } else { (i + 1..list.len()).find(shown) }) else { return };
         let moved = self.config.favorites.remove(i);
         self.config.favorites.insert(j, moved);
@@ -490,7 +490,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 fn section(s: &State, i: usize) -> Option<&'static str> {
     match s.mode {
         Mode::Root if s.query.text.trim().is_empty() && !s.config.favorites.is_empty() => {
-            let favorite = |i: usize| s.config.is_favorite(&s.results[i].title);
+            let favorite = |i: usize| s.config.is_favorite(&s.results[i]);
             match (i, favorite(i)) {
                 (0, true) => Some("Favorites"),
                 (0, false) => Some("Suggestions"),
@@ -631,7 +631,8 @@ const SCENES: &[(&str, fn(&mut State))] = &[
     ("empty", |s| scene(s, Mode::Root, "")),
     ("favorites", |s| {
         scene(s, Mode::Root, "");
-        s.config.favorites = vec!["Visual Studio Code".into(), "Slack".into(), "Clipboard History".into()];
+        let pick = ["Visual Studio Code", "Slack", "Clipboard History"].map(|t| s.items.iter().find(|it| it.title == t).unwrap());
+        s.config.favorites = pick.map(config::Favorite::of).to_vec();
         s.relist();
     }),
     ("apps", |s| scene(s, Mode::Root, "vsc")),
@@ -756,7 +757,8 @@ mod tests {
     #[test]
     fn command_option_arrows_reorder_favorites() {
         let mut s = State::new(config::example(), demo_items(), demo_history());
-        s.config.favorites = vec!["Slack".into(), "Gone".into(), "Arc".into(), "Notes".into()];
+        let app = |t: &str| config::Favorite { title: t.into(), kind: Kind::App.label().into() };
+        s.config.favorites = vec![app("Slack"), app("Gone"), app("Arc"), app("Notes")];
         s.refresh();
         let titles = |s: &State| s.results[..3].iter().map(|it| it.title.clone()).collect::<Vec<_>>();
         assert_eq!(titles(&s), ["Slack", "Arc", "Notes"]);
@@ -766,7 +768,7 @@ mod tests {
         assert_eq!((titles(&s), s.picked), (vec!["Arc".into(), "Slack".into(), "Notes".into()], 0));
         // The first can't go higher, the last can't go lower.
         s.move_favorite(true);
-        assert_eq!(s.config.favorites[0], "Arc");
+        assert_eq!(s.config.favorites[0].title, "Arc");
         s.picked = 2;
         s.move_favorite(false);
         assert_eq!(titles(&s), ["Arc", "Slack", "Notes"]);
