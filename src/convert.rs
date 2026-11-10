@@ -303,6 +303,40 @@ fn zone(name: &str) -> Option<(TimeZone, String)> {
     name.contains('/').then(|| TimeZone::get(&typed).ok().map(|tz| (tz, typed.clone()))).flatten()
 }
 
+/// The place a World Clock entry or query names, by the label to save and show it under: "Tokyo",
+/// "PST", "UTC+5:30", "Buenos Aires". The label reads back as the same zone.
+pub fn clock_zone(name: &str) -> Option<(TimeZone, String)> {
+    zone(&name.trim().to_lowercase())
+}
+
+/// Whether a root query asks for the World Clock, so the panel pins its times above the other
+/// rows: a start of "time" (three letters or more), "clock" or "clocks", or "world clock" typed past
+/// "world". "time in tokyo" is a conversion, not this.
+pub fn asks_for_clocks(query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    (q.len() >= 3 && "time".starts_with(&q)) || q == "clock" || q == "clocks" || (q.len() >= 7 && "world clock".starts_with(&q))
+}
+
+/// What a World Clock row shows for `zone` at `now`: the time there, and its day and offset next
+/// to here, such as ("4:05 PM", "Tomorrow · 16h ahead").
+pub fn world_clock(zone: &TimeZone, now: &Zoned) -> (String, String) {
+    let there = now.with_time_zone(zone.clone());
+    let day = match there.date().since(now.date()).map(|d| d.get_days()).unwrap_or(0) {
+        1 => "Tomorrow",
+        -1 => "Yesterday",
+        _ => "Today",
+    };
+    let diff = (there.offset().seconds() - now.offset().seconds()) / 60;
+    let (h, m) = (diff.abs() / 60, diff.abs() % 60);
+    let span = match (h, m) {
+        (0, 0) => return (there.strftime("%-I:%M %p").to_string(), format!("{day} · same time as here")),
+        (_, 0) => format!("{h}h"),
+        (0, _) => format!("{m}m"),
+        _ => format!("{h}h {m}m"),
+    };
+    (there.strftime("%-I:%M %p").to_string(), format!("{day} · {span} {}", if diff > 0 { "ahead" } else { "behind" }))
+}
+
 /// "utc+5", "gmt-3:30", "utc+0545", "+8" as a fixed zone labelled like "UTC+5:30".
 fn utc_offset(name: &str) -> Option<(TimeZone, String)> {
     let rest = name.strip_prefix("utc").or_else(|| name.strip_prefix("gmt")).unwrap_or(name).trim();
@@ -451,6 +485,34 @@ mod tests {
         assert_eq!(title("8pm new york to manila").as_deref(), Some("9:00 AM (next day)"));
         assert_eq!(title("25:00 in tokyo"), None);
         assert_eq!(title("time in atlantis"), None);
+    }
+
+    #[test]
+    fn only_time_clock_or_world_clock_asks_for_the_clocks() {
+        for q in ["tim", "Time", " time ", "clock", "clocks", "world c", "World Clock"] {
+            assert!(asks_for_clocks(q), "{q:?}");
+        }
+        for q in ["ti", "timer", "time in tokyo", "3pm pst in manila", "clo", "world", "word"] {
+            assert!(!asks_for_clocks(q), "{q:?}");
+        }
+    }
+
+    #[test]
+    fn world_clock_labels_read_back_and_say_the_day_and_offset() {
+        for typed in ["tokyo", "PST", "utc+5:30", "buenos aires", "asia/manila", "new york"] {
+            let (tz, label) = clock_zone(typed).unwrap();
+            assert_eq!(clock_zone(&label).unwrap().0, tz, "{typed} saved as {label}");
+        }
+        assert_eq!(clock_zone("narnia"), None);
+        // 22:30 in Manila (UTC+8).
+        let now: Zoned = "2026-11-10T22:30:00+08:00[Asia/Manila]".parse().unwrap();
+        let at = |name: &str| world_clock(&clock_zone(name).unwrap().0, &now);
+        assert_eq!(at("tokyo"), ("11:30 PM".into(), "Today · 1h ahead".into()));
+        assert_eq!(at("utc+9:30"), ("12:00 AM".into(), "Tomorrow · 1h 30m ahead".into()));
+        assert_eq!(at("pst"), ("6:30 AM".into(), "Today · 16h behind".into()));
+        assert_eq!(at("singapore"), ("10:30 PM".into(), "Today · same time as here".into()));
+        let early: Zoned = "2026-11-10T01:00:00+08:00[Asia/Manila]".parse().unwrap();
+        assert_eq!(world_clock(&clock_zone("london").unwrap().0, &early).1, "Yesterday · 8h behind");
     }
 
     #[test]

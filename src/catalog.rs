@@ -21,6 +21,7 @@ pub enum Kind {
     Clip,
     File,
     Usage,
+    Clock,
 }
 
 impl Kind {
@@ -36,6 +37,7 @@ impl Kind {
             Kind::Clip => "Clipboard",
             Kind::File => "File",
             Kind::Usage => "AI Usage",
+            Kind::Clock => "World Clock",
         }
     }
 
@@ -52,6 +54,7 @@ impl Kind {
             Kind::Clip => "Paste",
             Kind::File => "Open File",
             Kind::Usage => "Open Usage Page",
+            Kind::Clock => "Copy Time",
         }
     }
 }
@@ -72,6 +75,9 @@ pub enum Action {
     ClipboardHistory,
     FileSearch,
     AiUsage,
+    WorldClock,
+    /// Adds the place labelled so to World Clock.
+    AddClock(String),
     Settings,
     Quit,
 }
@@ -88,11 +94,13 @@ pub struct Item {
     pub hotkey: Option<String>,
     /// Percent left of an AI plan limit, drawn as a meter at the row's end.
     pub meter: Option<f64>,
+    /// A value shown large at the row's end, such as a world clock's time.
+    pub value: Option<String>,
 }
 
 impl Item {
     pub fn new(title: impl Into<String>, subtitle: impl Into<String>, kind: Kind, action: Action) -> Self {
-        Item { title: title.into(), subtitle: subtitle.into(), kind, action, icon: None, hotkey: None, meter: None }
+        Item { title: title.into(), subtitle: subtitle.into(), kind, action, icon: None, hotkey: None, meter: None, value: None }
     }
 }
 
@@ -302,6 +310,7 @@ pub fn commands(config: &Config) -> Vec<Item> {
     });
     out.push(Item::new("Search Files", "Find files by name", Kind::Command, Action::FileSearch));
     out.push(Item::new("AI Usage", "Claude and ChatGPT plan limits left", Kind::Command, Action::AiUsage));
+    out.push(Item::new("World Clock", "The time in the places you add", Kind::Command, Action::WorldClock));
     out.push(Item {
         hotkey: Some(if cfg!(target_os = "macos") { "⌘," } else { "Ctrl+," }.into()),
         ..Item::new("Runecast Settings", "Hotkeys, snippets, quicklinks and more", Kind::Command, Action::Settings)
