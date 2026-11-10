@@ -7,13 +7,10 @@ set -euo pipefail
 
 version=$1
 cd dist
-rm -rf dmg "Runecast-$version-macos.zip" "Runecast-$version-macos.dmg" Runecast-latest-macos.dmg
+rm -rf "Runecast-$version-macos.zip" "Runecast-$version-macos.dmg" Runecast-latest-macos.dmg
 ditto -c -k --keepParent Runecast.app "Runecast-$version-macos.zip"
-mkdir dmg
-cp -R Runecast.app dmg/
-ln -s /Applications dmg/Applications
-hdiutil create -volname Runecast -srcfolder dmg -ov -format UDZO "Runecast-$version-macos.dmg"
-rm -rf dmg
+# The window shows Runecast beside an Applications link over a background that says to drag it there.
+pipx run --spec dmgbuild==1.6.7 dmgbuild -s ../.github/scripts/dmg-settings.py Runecast "Runecast-$version-macos.dmg"
 if [[ -n ${IDENTITY:-} ]]; then
   codesign --sign "$IDENTITY" --timestamp "Runecast-$version-macos.dmg"
 fi

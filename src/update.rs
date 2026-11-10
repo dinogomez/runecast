@@ -150,7 +150,7 @@ fn swap(release: &Release) -> Result<(), String> {
 
 /// The `.app` this process runs from: `Runecast.app/Contents/MacOS/runecast`.
 #[cfg(target_os = "macos")]
-fn running_app() -> Option<PathBuf> {
+pub fn running_app() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
     let app = exe.ancestors().nth(3)?;
     (app.extension()? == "app" && exe.parent()?.ends_with("Contents/MacOS")).then(|| app.to_path_buf())

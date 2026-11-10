@@ -877,7 +877,8 @@ fn main() {
                 let rates = me.clone();
                 convert::refresh_in_background(s.rates.is_stale(usage::now()), move |r| rates.update(move |s, _| s.rates = r));
                 update::check_in_background(move |release| me.update(move |s, _| s.offer_update(release)));
-                if !welcome::seen() {
+                // A relaunch from the Welcome window opens it again, to show the permission took.
+                if !welcome::seen() || std::env::args().any(|a| a == welcome::REOPEN) {
                     welcome::mark_seen();
                     s.show_welcome();
                 }
