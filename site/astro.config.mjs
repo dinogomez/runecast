@@ -2,7 +2,7 @@ import sitemap from "@astrojs/sitemap";
 import { defineConfig } from "astro/config";
 
 export default defineConfig({
-  site: "https://runecast.dinogomez.app",
+  site: "https://www.runecast.sh",
   integrations: [sitemap({ filter: (page) => !page.endsWith(".png") })],
   devToolbar: { enabled: false },
   // The page imports the app icon and screenshots from ../assets and ../docs, so the README and
