@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::catalog::Item;
 use crate::hotkeys::Hotkey;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -19,6 +20,27 @@ pub struct Config {
     pub snippets: Vec<Snippet>,
     pub quicklinks: Vec<Quicklink>,
     pub aliases: Vec<Alias>,
+    /// The items an empty query lists first, in this order. ⌘⇧F in the launcher adds the selected
+    /// item or takes it off.
+    pub favorites: Vec<Favorite>,
+}
+
+/// A launcher item by its title and kind, so an app and a snippet with one name stay apart.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Favorite {
+    pub title: String,
+    /// The kind as `Kind::label` names it: "Application", "Snippet", "Quicklink"…
+    pub kind: String,
+}
+
+impl Favorite {
+    pub fn of(item: &Item) -> Self {
+        Favorite { title: item.title.clone(), kind: item.kind.label().into() }
+    }
+
+    pub fn is(&self, item: &Item) -> bool {
+        self.kind == item.kind.label() && self.title.eq_ignore_ascii_case(&item.title)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -103,6 +125,10 @@ impl Config {
     /// The engine's name and URL template; the first engine when the name is unknown.
     pub fn engine(&self) -> (&'static str, &'static str) {
         ENGINES.iter().copied().find(|(name, _)| *name == self.general.search_engine).unwrap_or(ENGINES[0])
+    }
+
+    pub fn is_favorite(&self, item: &Item) -> bool {
+        self.favorites.iter().any(|f| f.is(item))
     }
 
     /// The hotkey's accelerator, or `None` when it's off.

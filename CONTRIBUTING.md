@@ -54,6 +54,7 @@ target/release/runecast --tree tree.json --scene calc           # dump the eleme
 | `src/config.rs` | `config.json` |
 | `src/menubar.rs` | The menu bar icon |
 | `src/login.rs` | Launch at login |
+| `src/update.rs` | Checking for and installing new releases |
 
 ## Branches and releases
 

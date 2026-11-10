@@ -28,6 +28,7 @@
 | | Feature | Try |
 |---|---|---|
 | 🚀 | Fuzzy app search, ranked by what you use most | `vsc` |
+| ⭐ | Favorites, listed first when the search is empty | <kbd>⌘ Cmd</kbd> + <kbd>⇧ Shift</kbd> + <kbd>F</kbd> |
 | 📄 | File search | `report` |
 | 📋 | Clipboard history | <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>V</kbd> |
 | 🪟 | Window management (macOS) | `half`, <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>←</kbd> |
@@ -54,6 +55,8 @@ Download the `.dmg` (macOS) or `.tar.gz` (Linux) from [Releases](https://github.
 
 On macOS, grant Runecast **Accessibility** permission (System Settings → Privacy & Security) so it can paste and move windows.
 
+Runecast checks for new releases daily. When one is out, the menu bar icon's menu offers it at the top: on macOS it installs the update and relaunches; on Linux it opens the release page.
+
 ## Shortcuts
 
 | Shortcut | Action |
@@ -64,6 +67,8 @@ On macOS, grant Runecast **Accessibility** permission (System Settings → Priva
 | <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>→</kbd> | Move window to the right half |
 | <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>↩ Return</kbd> | Maximize window |
 | <kbd>⌃ Control</kbd> + <kbd>⌥ Option</kbd> + <kbd>C</kbd> | Center window |
+| <kbd>⌘ Cmd</kbd> + <kbd>⇧ Shift</kbd> + <kbd>F</kbd> | Add the selected item to Favorites, or remove it |
+| <kbd>⌘ Cmd</kbd> + <kbd>⌥ Option</kbd> + <kbd>↑</kbd> / <kbd>↓</kbd> | Move the selected favorite up or down |
 | <kbd>⌘ Cmd</kbd> + <kbd>,</kbd> | Settings |
 | <kbd>⎋ Esc</kbd> | Clear, go back, or close |
 
@@ -71,7 +76,7 @@ Rebind any of these in Settings. On Linux, use <kbd>Ctrl</kbd> in place of <kbd>
 
 ## Configuration
 
-Settings (search engine, appearance, hotkeys, snippets, quicklinks, aliases) are saved to `config.json`. You can also edit the file by hand:
+Settings (search engine, appearance, hotkeys, favorites, snippets, quicklinks, aliases) are saved to `config.json`. You can also edit the file by hand:
 
 - macOS: `~/Library/Application Support/Runecast/`
 - Linux: `~/.config/runecast/`
