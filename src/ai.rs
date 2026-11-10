@@ -78,6 +78,7 @@ const RETRY: i64 = 30;
 
 const RATE_LIMITED: &str = "Rate limited";
 const UNREACHABLE: &str = "Couldn't reach the server";
+const EXPIRED: &str = "Sign-in expired";
 
 /// Asks the given providers at once, each on its own thread. Blocks; call it off the UI thread.
 pub fn fetch(due: Vec<usize>) -> Fetched {
@@ -181,10 +182,14 @@ fn span(secs: i64) -> String {
 
 fn claude() -> Result<Vec<Window>, String> {
     let creds = claude_credentials().ok_or("Not signed in: run `claude` and log in with your Claude plan")?;
-    let token = serde_json::from_str::<Value>(&creds).ok()
-        .and_then(|v| v["claudeAiOauth"]["accessToken"].as_str().map(str::to_string))
+    let oauth = &creds["claudeAiOauth"];
+    let token = oauth["accessToken"].as_str()
         .ok_or("Claude Code's sign-in has no plan token (API key logins have no usage limits)")?;
-    let body = get("https://api.anthropic.com/api/oauth/usage", &[
+    // Claude Code refreshes its token when it runs; refreshing it here would sign Claude Code out.
+    if oauth["expiresAt"].as_i64().is_some_and(|at| at <= jiff::Timestamp::now().as_millisecond()) {
+        return Err(format!("{EXPIRED}: run `claude` once to refresh it"));
+    }
+    let body = get("claude", "https://api.anthropic.com/api/oauth/usage", &[
         format!("Authorization: Bearer {token}"),
         "anthropic-beta: oauth-2025-04-20".into(),
         // Requests not from Claude Code land in a far stricter rate limit; CodexBar sends the same.
@@ -193,16 +198,21 @@ fn claude() -> Result<Vec<Window>, String> {
     parse_claude(&body)
 }
 
-fn claude_credentials() -> Option<String> {
-    let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| home().map(|h| h.join(".claude")))?;
-    if let Ok(text) = std::fs::read_to_string(dir.join(".credentials.json")) {
-        return Some(text);
-    }
-    if !cfg!(target_os = "macos") {
-        return None;
-    }
-    let out = Command::new("security").args(["find-generic-password", "-s", "Claude Code-credentials", "-w"]).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+/// Claude Code's saved sign-in. On macOS it keeps it in the Keychain, but a `.credentials.json`
+/// from an older install can linger beside it, so whichever expires last is the live one.
+fn claude_credentials() -> Option<Value> {
+    let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).or_else(|| home().map(|h| h.join(".claude")));
+    let file = dir.and_then(|d| std::fs::read_to_string(d.join(".credentials.json")).ok());
+    let keychain = cfg!(target_os = "macos").then(|| {
+        let out = Command::new("security").args(["find-generic-password", "-s", "Claude Code-credentials", "-w"]).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }).flatten();
+    latest_sign_in([file, keychain])
+}
+
+fn latest_sign_in(candidates: impl IntoIterator<Item = Option<String>>) -> Option<Value> {
+    candidates.into_iter().flatten().filter_map(|text| serde_json::from_str::<Value>(&text).ok())
+        .max_by_key(|v| v["claudeAiOauth"]["expiresAt"].as_i64().unwrap_or(0))
 }
 
 /// The installed Claude Code's version, from `claude --version`, read once per run; "2.1.0" when it
@@ -264,7 +274,7 @@ fn codex() -> Result<Vec<Window>, String> {
     if let Some(account) = tokens["account_id"].as_str() {
         headers.push(format!("ChatGPT-Account-Id: {account}"));
     }
-    parse_codex(&get("https://chatgpt.com/backend-api/wham/usage", &headers)?, jiff::Timestamp::now().as_second())
+    parse_codex(&get("codex", "https://chatgpt.com/backend-api/wham/usage", &headers)?, jiff::Timestamp::now().as_second())
 }
 
 fn parse_codex(body: &str, now: i64) -> Result<Vec<Window>, String> {
@@ -293,8 +303,9 @@ fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
 
-/// GETs `url` with curl, passing it and the headers on stdin so tokens stay out of `ps`.
-fn get(url: &str, headers: &[String]) -> Result<String, String> {
+/// GETs `url` with curl, passing it and the headers on stdin so tokens stay out of `ps`. `cli` is
+/// the command whose sign-in the headers carry, for the hint when it's turned down.
+fn get(cli: &str, url: &str, headers: &[String]) -> Result<String, String> {
     let mut child = Command::new("curl").args(["-s", "--max-time", "10", "-w", "\n%{http_code}", "-K", "-"])
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
         .spawn().map_err(|_| "curl isn't installed")?;
@@ -308,7 +319,7 @@ fn get(url: &str, headers: &[String]) -> Result<String, String> {
     let (body, status) = text.rsplit_once('\n').unwrap_or(("", &text));
     match status.trim() {
         "200" => Ok(body.to_string()),
-        "401" | "403" => Err("Sign-in expired: open the CLI once to refresh it".into()),
+        "401" | "403" => Err(format!("{EXPIRED}: run `{cli}` once to refresh it")),
         "429" => Err(RATE_LIMITED.into()),
         "000" => Err(UNREACHABLE.into()),
         code => Err(format!("The server answered {code}")),
@@ -346,6 +357,16 @@ mod tests {
             Window { label: "5-hour session".into(), used: 33.0, resets_at: Some(1_794_207_600) },
             Window { label: "Weekly".into(), used: 71.0, resets_at: Some(1_794_506_400) },
         ]);
+    }
+
+    #[test]
+    fn a_stale_credentials_file_loses_to_the_keychain_sign_in() {
+        let creds = |token: &str, expires: i64| Some(format!(r#"{{"claudeAiOauth": {{"accessToken": "{token}", "expiresAt": {expires}}}}}"#));
+        let pick = |file, keychain| latest_sign_in([file, keychain]).map(|v| v["claudeAiOauth"]["accessToken"].as_str().unwrap().to_string());
+        assert_eq!(pick(creds("old", 1_700_000_000_000), creds("live", 1_800_000_000_000)).as_deref(), Some("live"));
+        assert_eq!(pick(creds("live", 1_800_000_000_000), creds("old", 1_700_000_000_000)).as_deref(), Some("live"));
+        assert_eq!(pick(None, creds("live", 1)).as_deref(), Some("live"));
+        assert_eq!(pick(Some("not json".into()), None), None);
     }
 
     #[test]
@@ -413,7 +434,7 @@ mod tests {
         assert_eq!((row.title.as_str(), row.subtitle.as_str()), ("Rate limited", "Claude allows few usage checks; next try in 4m"));
         // A sign-in failure replaces a reading rather than hiding behind it.
         r.update(vec![(0, Ok(vec![w(1.0)]))], 400);
-        r.update(vec![(0, Err("Sign-in expired: open the CLI once to refresh it".into()))], 600);
+        r.update(vec![(0, Err(format!("{EXPIRED}: run `claude` once to refresh it")))], 600);
         assert_eq!(r.items(600)[0].1.title, "Sign-in expired");
     }
 
