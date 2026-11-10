@@ -7,15 +7,34 @@ import Demo from "../components/Demo.astro";
 const repo = "https://github.com/dinogomez/runecast";
 const description =
   "A fast, free and open-source launcher for macOS and Linux. Open apps, find files, do math, convert units and time zones, and manage windows from your keyboard.";
+const title = "Runecast: a fast, open-source launcher for macOS and Linux";
 const favicon = await getImage({ src: icon, width: 64, format: "png" });
+const touchIcon = await getImage({ src: icon, width: 180, format: "png" });
+const url = new URL(Astro.url.pathname, Astro.site).href;
+const ogImage = new URL("/og.png", Astro.site).href;
+const ogAlt = "Runecast: a fast, open-source launcher for macOS and Linux";
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Runecast",
+  description,
+  url,
+  image: ogImage,
+  applicationCategory: "UtilitiesApplication",
+  operatingSystem: "macOS, Linux",
+  license: `${repo}/blob/main/LICENSE`,
+  downloadUrl: `${repo}/releases/latest`,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+};
 ---
 
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Runecast</title>
+    <title>{title}</title>
     <meta name="description" content={description} />
+    <link rel="canonical" href={url} />
     <meta name="theme-color" content="#161616" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
     <script is:inline>
@@ -26,12 +45,23 @@ const favicon = await getImage({ src: icon, width: 64, format: "png" });
     </script>
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Runecast" />
-    <meta property="og:title" content="Runecast" />
+    <meta property="og:url" content={url} />
+    <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
-    <meta name="twitter:card" content="summary" />
-    <meta name="twitter:title" content="Runecast" />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={ogAlt} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <meta name="twitter:image:alt" content={ogAlt} />
     <link rel="icon" type="image/png" href={favicon.src} />
+    <link rel="apple-touch-icon" href={touchIcon.src} />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
   </head>
   <body>
     <nav class="corner">
@@ -39,7 +69,7 @@ const favicon = await getImage({ src: icon, width: 64, format: "png" });
         <svg class="sun" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></g></svg>
         <svg class="moon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
       </button>
-      <a class="github" href={repo} aria-label="Runecast on GitHub">
+      <a class="github" href={repo} target="_blank" rel="noopener" aria-label="Runecast on GitHub">
         <svg viewBox="0 0 16 16" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>
       </a>
     </nav>
@@ -51,7 +81,7 @@ const favicon = await getImage({ src: icon, width: 64, format: "png" });
           Press <kbd>⌥</kbd><kbd>Space</kbd>, type a few letters, hit <kbd>↩</kbd>.
         </p>
         <div class="actions">
-          <a class="button" href={`${repo}/releases/latest`}>
+          <a class="button download" href={`${repo}/releases/latest/download/Runecast-latest-macos.dmg`}>
             <svg viewBox="0 0 384 512" width="15" height="18" aria-hidden="true"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9m-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3"/></svg>
             Download for macOS
           </a>
@@ -62,10 +92,20 @@ const favicon = await getImage({ src: icon, width: 64, format: "png" });
     </main>
 
     <footer>
-      Built with <a href="https://github.com/anomalyco/rune">Rune</a> · <a href={repo}>MIT License</a>
+      Built with <a href="https://github.com/anomalyco/rune" target="_blank" rel="noopener">Rune</a> · <a href={`${repo}/blob/main/LICENSE`} target="_blank" rel="noopener">MIT License</a>
     </footer>
 
     <script>
+      // Ask GitHub for the latest versioned DMG. Until the answer arrives, or if it fails, the button
+      // fetches Runecast-latest-macos.dmg, the same DMG under a fixed name.
+      fetch("https://api.github.com/repos/dinogomez/runecast/releases/latest")
+        .then((r) => r.json())
+        .then((release: { assets?: { name: string; browser_download_url: string }[] }) => {
+          const dmg = release.assets?.find((a) => a.name.endsWith("-macos.dmg"));
+          if (dmg) document.querySelector<HTMLAnchorElement>(".download")!.href = dmg.browser_download_url;
+        })
+        .catch(() => {});
+
       const root = document.documentElement;
       const toggle = document.querySelector<HTMLButtonElement>(".theme")!;
       const label = () =>

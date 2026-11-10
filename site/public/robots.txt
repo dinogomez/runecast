@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://runecast.dinogomez.app/sitemap-index.xml
