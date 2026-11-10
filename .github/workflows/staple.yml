@@ -78,7 +78,8 @@ jobs:
           xcrun stapler staple dist/Runecast.app
           xcrun stapler validate dist/Runecast.app
           IDENTITY=$(.github/scripts/developer-id.sh) .github/scripts/package-macos.sh "$version"
-          gh release upload "$TAG" "dist/Runecast-$version-macos.zip" "dist/Runecast-$version-macos.dmg" --clobber
+          gh release upload "$TAG" "dist/Runecast-$version-macos.zip" "dist/Runecast-$version-macos.dmg" \
+            dist/Runecast-latest-macos.dmg --clobber
           .github/scripts/notarization-note.sh set "$TAG" accepted "$SUBMISSION"
 
       - name: Report the rejection
