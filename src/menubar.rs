@@ -1,6 +1,6 @@
 //! The menu bar icon: an `NSStatusItem` on macOS (Rune's tray doesn't cover macOS yet), Rune's
-//! tray on Linux and Windows. Its menu opens the launcher, clipboard history, file search and
-//! Settings, and quits; once a newer release is out, it offers that at the top.
+//! tray on Linux and Windows. Its menu opens the launcher, clipboard history, file search, the
+//! Welcome window and Settings, and quits; once a newer release is out, it offers that at the top.
 
 use rune::AppHandle;
 
@@ -11,6 +11,7 @@ enum Pick {
     Open,
     Clipboard,
     Files,
+    Welcome,
     Settings,
     Quit,
     /// Only in the menu once `offer_update` adds it.
@@ -19,11 +20,12 @@ enum Pick {
 
 /// The menu, top to bottom; `None` is a separator. The last field is the macOS key equivalent,
 /// shown beside the item while the menu is open.
-const MENU: [Option<(Pick, &str, &str)>; 7] = [
+const MENU: [Option<(Pick, &str, &str)>; 8] = [
     Some((Pick::Open, "Open Runecast", "")),
     Some((Pick::Clipboard, "Clipboard History", "")),
     Some((Pick::Files, "Search Files", "")),
     None,
+    Some((Pick::Welcome, "Welcome to Runecast…", "")),
     Some((Pick::Settings, "Settings…", ",")),
     None,
     Some((Pick::Quit, "Quit Runecast", "q")),
@@ -37,6 +39,7 @@ impl Pick {
             Pick::Open => "open",
             Pick::Clipboard => "clipboard",
             Pick::Files => "files",
+            Pick::Welcome => "welcome",
             Pick::Settings => "settings",
             Pick::Quit => "quit",
             Pick::Update => "update",
@@ -56,6 +59,7 @@ fn run(launcher: &AppHandle<State>, pick: Pick) {
         Pick::Open => launcher.update(|s, _| s.open(Mode::Root)),
         Pick::Clipboard => launcher.update(|s, _| s.open(Mode::Clipboard)),
         Pick::Files => launcher.update(|s, _| s.open(Mode::Files)),
+        Pick::Welcome => launcher.update(|s, _| s.show_welcome()),
         Pick::Update => launcher.update(|s, _| s.install_update()),
     }
 }
@@ -224,7 +228,7 @@ mod tests {
     fn every_pick_is_in_the_menu_once_with_its_own_id() {
         let ids: Vec<&str> = Pick::all().map(Pick::id).collect();
         let unique: std::collections::HashSet<&&str> = ids.iter().collect();
-        assert_eq!(ids.len(), 6);
+        assert_eq!(ids.len(), 7);
         assert_eq!(unique.len(), ids.len());
     }
 }

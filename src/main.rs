@@ -23,6 +23,7 @@ mod menubar;
 mod settings;
 mod update;
 mod usage;
+mod welcome;
 mod wm;
 
 use std::collections::HashMap;
@@ -88,6 +89,7 @@ struct State {
     me: Option<AppHandle<State>>,
     registry: Option<Arc<Mutex<Registry>>>,
     settings: Option<AppHandle<Settings>>,
+    welcome: Option<AppHandle<welcome::Welcome>>,
     /// A newer release, offered in the menu bar until it's picked.
     update: Option<update::Release>,
 }
@@ -100,7 +102,7 @@ impl State {
             mode: Mode::Root, query, config, items, history, usage: Usage::default(), rates: convert::Rates::default(), files: Vec::new(), file_search: None,
             ai: ai::Readings::default(), ai_fetch: None, ai_logos: Vec::new(),
             results: Vec::new(), picked: 0,
-            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None, update: None,
+            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None, welcome: None, update: None,
         };
         s.refresh();
         s
@@ -287,6 +289,14 @@ impl State {
 }
 
 impl State {
+    /// Brings up the Welcome window, on the first launch or from the menu bar.
+    fn show_welcome(&mut self) {
+        if let Some(welcome) = &self.welcome {
+            welcome.update(|s, _| s.reload());
+            welcome.open();
+        }
+    }
+
     /// Offers `release` at the top of the menu bar menu.
     fn offer_update(&mut self, release: update::Release) {
         menubar::offer_update(&release.label());
@@ -707,7 +717,15 @@ fn main() {
             ..AppSpec::new("Runecast Settings", settings::SIZE, || unreachable!(), settings::view)
         };
         let settings = App::new(settings_spec).windowless().keep_running().titlebar(Titlebar::new(settings::TITLEBAR));
-        let (me, settings_handle) = (launcher.handle(), settings.handle());
+        let welcome_spec = AppSpec {
+            scenes: welcome::SCENES,
+            setup: Some(welcome::setup),
+            poll: Some(welcome::poll),
+            ..AppSpec::new("Welcome to Runecast", welcome::SIZE, || unreachable!(), welcome::view)
+        };
+        let welcome = App::new(welcome_spec).windowless().keep_running().titlebar(Titlebar::new(welcome::TITLEBAR))
+            .on_close(welcome::on_close);
+        let (me, settings_handle, welcome_handle) = (launcher.handle(), settings.handle(), welcome.handle());
         let registry = Arc::new(Mutex::new(Registry::new(me.clone())));
 
         let shared = registry.clone();
@@ -721,6 +739,7 @@ fn main() {
                 s.relist();
                 s.registry = Some(shared);
                 s.settings = Some(settings_handle);
+                s.welcome = Some(welcome_handle);
                 s
             })
             .on_focus(|s, focused, tx| if !focused {
@@ -739,15 +758,22 @@ fn main() {
                 let rates = me.clone();
                 convert::refresh_in_background(s.rates.is_stale(usage::now()), move |r| rates.update(move |s, _| s.rates = r));
                 update::check_in_background(move |release| me.update(move |s, _| s.offer_update(release)));
+                if !welcome::seen() {
+                    welcome::mark_seen();
+                    s.show_welcome();
+                }
             }
         });
         let launcher_handle = launcher.handle();
         let settings = settings.init(move || Settings::new(config::load(), Some(registry), Some(launcher_handle)));
+        let (launcher_handle, me) = (launcher.handle(), welcome.handle());
+        let welcome = welcome.init(move || welcome::Welcome::new(Some(launcher_handle), Some(me)));
 
         let options = WindowOptions::launcher_panel().macos(|native| native.corner_radius(14.0));
         let windows: Vec<rune::AnyWindowSpec> = vec![
             WindowSpec::from_app("launcher", launcher).configured_options(options).into(),
             WindowSpec::from_app("settings", settings).into(),
+            WindowSpec::from_app("welcome", welcome).into(),
         ];
         windows
     });

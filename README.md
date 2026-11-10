@@ -53,7 +53,7 @@ Anything else falls back to a web search.
 
 Download the `.dmg` (macOS) or `.tar.gz` (Linux) from [Releases](https://github.com/dinogomez/runecast/releases). The release notes cover first-launch steps.
 
-On macOS, grant Runecast **Accessibility** permission (System Settings → Privacy & Security) so it can paste and move windows.
+On first launch a Welcome window shows the hotkey and, on macOS, asks for the **Accessibility** permission Runecast needs to paste and move windows. Open it again from the menu bar icon.
 
 Runecast checks for new releases daily. When one is out, the menu bar icon's menu offers it at the top: on macOS it installs the update and relaunches; on Linux it opens the release page.
 
