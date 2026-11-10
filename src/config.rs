@@ -19,6 +19,9 @@ pub struct Config {
     pub snippets: Vec<Snippet>,
     pub quicklinks: Vec<Quicklink>,
     pub aliases: Vec<Alias>,
+    /// Titles of the items an empty query lists first, in this order. ⌘⇧F in the launcher adds
+    /// the selected item or takes it off.
+    pub favorites: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -103,6 +106,10 @@ impl Config {
     /// The engine's name and URL template; the first engine when the name is unknown.
     pub fn engine(&self) -> (&'static str, &'static str) {
         ENGINES.iter().copied().find(|(name, _)| *name == self.general.search_engine).unwrap_or(ENGINES[0])
+    }
+
+    pub fn is_favorite(&self, title: &str) -> bool {
+        self.favorites.iter().any(|f| f.eq_ignore_ascii_case(title))
     }
 
     /// The hotkey's accelerator, or `None` when it's off.

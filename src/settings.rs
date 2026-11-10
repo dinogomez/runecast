@@ -1,10 +1,10 @@
-//! The Settings window: general options, hotkeys, aliases, snippets and quicklinks. Every change saves
+//! The Settings window: general options, hotkeys, favorites, aliases, snippets and quicklinks. Every change saves
 //! `config.json` and hands the new config to the launcher; a recorded hotkey is rebound at once.
 
 use std::sync::{Arc, Mutex};
 
 use rune::{AppHandle, Cx, Image, ImageCache, Waker, El, ScrollSpec, Shortcut, ShortcutError, TextEdit, TextStyle, Tx, col, el, row, spacer, text};
-use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
+use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, SegmentedControl, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
 
 use crate::State;
 use crate::catalog::{self, Action};
@@ -23,10 +23,11 @@ pub enum Tab {
     Snippets,
     Quicklinks,
     Aliases,
+    Favorites,
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [Tab::General, Tab::Hotkeys, Tab::Aliases, Tab::Snippets, Tab::Quicklinks];
+    const ALL: [Tab; 6] = [Tab::General, Tab::Hotkeys, Tab::Favorites, Tab::Aliases, Tab::Snippets, Tab::Quicklinks];
 
     fn title(self) -> &'static str {
         match self {
@@ -35,6 +36,7 @@ impl Tab {
             Tab::Snippets => "Snippets",
             Tab::Quicklinks => "Quicklinks",
             Tab::Aliases => "Aliases",
+            Tab::Favorites => "Favorites",
         }
     }
 
@@ -45,6 +47,7 @@ impl Tab {
             Tab::Snippets => "¶",
             Tab::Quicklinks => "↗",
             Tab::Aliases => "@",
+            Tab::Favorites => "★",
         }
     }
 }
@@ -60,7 +63,7 @@ pub struct Settings {
     snippet: usize,
     link: usize,
     alias: usize,
-    /// Titles the launcher can find, to warn about an alias for something that isn't there.
+    /// Titles the launcher can find, to warn about an alias or favorite for something that isn't there.
     /// Empty in headless scenes, where nothing is scanned.
     known: Vec<String>,
     name: TextEdit,
@@ -168,6 +171,8 @@ impl Settings {
         let (name, body, keyword) = match self.tab {
             Tab::Quicklinks => (link.name, String::new(), link.keyword.unwrap_or_default()),
             Tab::Aliases => (alias.alias, String::new(), alias.target),
+            // Favorites take the name of one to add in `name`.
+            Tab::Favorites => Default::default(),
             _ => (snippet.name, snippet.text, String::new()),
         };
         self.name.replace_text(name);
@@ -241,6 +246,41 @@ impl Settings {
         self.refresh();
         self.changed();
     }
+
+    /// Swaps favorite `i` with the one above it, or below it.
+    fn move_favorite(&mut self, i: usize, up: bool) {
+        let j = if up { i.checked_sub(1) } else { Some(i + 1) };
+        let Some(j) = j.filter(|j| *j < self.config.favorites.len()) else { return };
+        self.config.favorites.swap(i, j);
+        self.changed();
+    }
+
+    /// What the Add field would add: the launcher's own spelling of the typed title, or `None`
+    /// when it's empty, already a favorite, or names nothing the launcher has.
+    fn new_favorite(&self) -> Option<String> {
+        let typed = self.name.text.trim();
+        let title = match self.known.iter().find(|t| t.eq_ignore_ascii_case(typed)) {
+            Some(t) => t.clone(),
+            // Headless scenes scan nothing, so anything typed counts there.
+            None if self.known.is_empty() => typed.to_string(),
+            None => return None,
+        };
+        (!title.is_empty() && !self.config.is_favorite(&title)).then_some(title)
+    }
+
+    fn add_favorite(&mut self) {
+        let Some(title) = self.new_favorite() else { return };
+        self.config.favorites.push(title);
+        self.name.replace_text("");
+        self.changed();
+    }
+
+    fn remove_favorite(&mut self, i: usize) {
+        if i < self.config.favorites.len() {
+            self.config.favorites.remove(i);
+            self.changed();
+        }
+    }
 }
 
 pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
@@ -269,6 +309,7 @@ pub fn view(s: &Settings, cx: &mut Cx<Settings>) -> El {
     let body = match s.tab {
         Tab::General => scrolling(general(s, &k, &mut layer)),
         Tab::Hotkeys => scrolling(hotkeys(s, &k)),
+        Tab::Favorites => scrolling(favorites(s, &k)),
         Tab::Snippets | Tab::Quicklinks | Tab::Aliases => editor(s, &k),
     };
     let content = col().grow(1.0).min_w(0.0).h_full().fill(k.c.page)
@@ -389,6 +430,61 @@ fn hotkeys(s: &Settings, k: &Kit) -> El {
         .child(text("Click a shortcut to record a new one. Backspace clears it; Escape cancels.").font(k.ty.small).color(k.c.text_faint)))
 }
 
+/// The favorites in the order the launcher lists them, each with buttons to move or remove it.
+fn favorites(s: &Settings, k: &Kit) -> El {
+    let keys = if cfg!(target_os = "macos") { ("⌘⇧F", "⌘⌥↑/↓") } else { ("Ctrl+Shift+F", "Ctrl+Alt+↑/↓") };
+    let how = format!("Select an app or command in the launcher and press {} to add it here, or {} to move it.", keys.0, keys.1);
+    let list = &s.config.favorites;
+    let typed = s.name.text.trim();
+    let (hint, color) = match s.new_favorite() {
+        None if s.config.is_favorite(typed) => (format!("“{typed}” is already a favorite."), k.c.text_faint),
+        None if !typed.is_empty() => (format!("Nothing in the launcher is named “{typed}”. Use the name as it shows in search."), k.c.danger.fg),
+        _ => ("Type the name of an app or command as it shows in search.".to_string(), k.c.text_faint),
+    };
+    let input = TextInput::new(&s.name).width(None).placeholder("Visual Studio Code").label("Add favorite")
+        .on_edit(name_edit)
+        .on_key(|s: &mut Settings, ev, _| {
+            let enter = ev.key == rune::Key::Enter;
+            if enter {
+                s.add_favorite();
+            }
+            enter
+        })
+        .build(k);
+    let add = Button::new("Add").variant(ButtonVariant::Outline).disabled(s.new_favorite().is_none())
+        .on_press(|s: &mut Settings| s.add_favorite()).build(k);
+    let adder = col().w_full().gap(6.0).pb(8.0)
+        .child(row().w_full().gap(8.0).center_y().child(el().key("favorite-name").grow(1.0).min_w(0.0).child(input)).child(add))
+        .child(text(hint).font(k.ty.small).color(color).wrap().w_full());
+    let mut out = col().child(section(k, "Add favorite")).child(adder).child(section(k, "Listed first when the search is empty"));
+    if list.is_empty() {
+        return out.child(setting(k, "No favorites yet", &how, el()));
+    }
+    let button = |glyph: &'static rune::Icon, label: String, disabled: bool| IconButton::new(glyph)
+        .variant(IconButtonVariant::GhostMuted).control_size(ControlSize::Small).label(label).disabled(disabled);
+    for (i, title) in list.iter().enumerate() {
+        if i > 0 {
+            out = out.child(divider(k));
+        }
+        let missing = !s.known.is_empty() && !s.known.iter().any(|t| t.eq_ignore_ascii_case(title));
+        let mut name = row().grow(1.0).min_w(0.0).gap(10.0).center_y()
+            .child(text(format!("{}", i + 1)).font(k.ty.small).color(k.c.text_faint).w(16.0))
+            .child(text(title.clone()).font(k.ty.ui_medium).color(k.c.text_base).truncate());
+        if missing {
+            name = name.child(text("Not found in the launcher").font(k.ty.small).color(k.c.danger.fg));
+        }
+        out = out.child(row().key(format!("favorite-{i}")).w_full().h(48.0).gap(4.0).center_y()
+            .child(name)
+            .child(button(&rune_kit::glyphs::CHEVRON_UP, format!("Move {title} up"), i == 0)
+                .on_press(move |s: &mut Settings| s.move_favorite(i, true)).build(k))
+            .child(button(&rune_kit::glyphs::CHEVRON_DOWN, format!("Move {title} down"), i + 1 == list.len())
+                .on_press(move |s: &mut Settings| s.move_favorite(i, false)).build(k))
+            .child(button(&rune_kit::glyphs::CLOSE, format!("Remove {title}"), false)
+                .on_press(move |s: &mut Settings| s.remove_favorite(i)).build(k)));
+    }
+    out.child(row().w_full().pt(16.0).child(text(how).font(k.ty.small).color(k.c.text_faint).wrap().w_full()))
+}
+
 /// Snippets, quicklinks and aliases: a list on the left, the selected one's fields on the right.
 fn editor(s: &Settings, k: &Kit) -> El {
     let links = s.tab == Tab::Quicklinks;
@@ -490,9 +586,40 @@ pub const SCENES: &[(&str, fn(&mut Settings))] = &[
     ("snippets", |s| scene(s, Tab::Snippets)),
     ("quicklinks", |s| scene(s, Tab::Quicklinks)),
     ("aliases", |s| scene(s, Tab::Aliases)),
+    ("favorites", |s| {
+        scene(s, Tab::Favorites);
+        s.config.favorites = vec!["Visual Studio Code".into(), "Slack".into(), "Clipboard History".into()];
+    }),
+    ("favorites-add", |s| {
+        scene(s, Tab::Favorites);
+        s.config.favorites = vec!["Slack".into()];
+        s.known = vec!["Slack".into(), "Visual Studio Code".into()];
+        s.name.replace_text("Visal Studio");
+    }),
 ];
 
 fn scene(s: &mut Settings, tab: Tab) {
     *s = Settings::new(config::example(), None, None);
     s.select_tab(tab);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_favorite_takes_the_launchers_spelling_once() {
+        let mut s = Settings::new(config::example(), None, None);
+        s.known = vec!["Visual Studio Code".into(), "Slack".into()];
+        s.name.replace_text("  visual studio code ");
+        s.add_favorite();
+        assert_eq!(s.config.favorites, ["Visual Studio Code"]);
+        assert_eq!(s.name.text, "", "the field clears for the next one");
+        // Again in other case, or a name the launcher doesn't have: nothing changes.
+        for typed in ["VISUAL STUDIO CODE", "Visal Studio", "   "] {
+            s.name.replace_text(typed);
+            s.add_favorite();
+            assert_eq!(s.config.favorites, ["Visual Studio Code"], "{typed:?}");
+        }
+    }
 }

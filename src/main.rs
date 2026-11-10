@@ -128,7 +128,7 @@ impl State {
         let boost = |it: &Item| self.usage.boost(it, now);
         let ctx = catalog::Ctx {
             engine: self.config.engine(), boost: &boost, files: &self.files, rates: &self.rates,
-            aliases: &self.config.aliases, now: &clock,
+            aliases: &self.config.aliases, favorites: &self.config.favorites, now: &clock,
         };
         // A row the user moved to stays picked when rows land above it (usage limits, file matches),
         // so ↩ still runs what they chose. Row 0 stays on top: that's where answers belong.
@@ -155,6 +155,50 @@ impl State {
         let same = |it: &Item| chosen.as_ref().is_some_and(|(t, s, k)| it.title == *t && it.subtitle == *s && it.kind == *k);
         self.picked = self.results.iter().position(same).unwrap_or(self.picked.min(self.results.len().saturating_sub(1)));
         self.load_icons();
+    }
+
+    /// ⌘⇧F: puts the selected row in Favorites, or takes it off, keeping it selected.
+    fn toggle_favorite(&mut self) {
+        let Some(item) = self.results.get(self.picked) else { return };
+        // Only what the catalog lists can come back: not answers, file matches or web searches.
+        if self.mode != Mode::Root || !self.items.iter().any(|it| it.title == item.title && it.kind == item.kind) {
+            return;
+        }
+        let (title, kind) = (item.title.clone(), item.kind);
+        match self.config.favorites.iter().position(|f| f.eq_ignore_ascii_case(&title)) {
+            Some(i) => _ = self.config.favorites.remove(i),
+            None => self.config.favorites.push(title.clone()),
+        }
+        self.favorites_changed(&title, kind);
+    }
+
+    /// ⌘⌥↑/↓: moves the selected favorite one place up or down the Favorites section.
+    fn move_favorite(&mut self, up: bool) {
+        // Only where the section shows: the root list with nothing typed.
+        let Some(item) = self.results.get(self.picked).filter(|_| self.mode == Mode::Root && self.query.text.trim().is_empty()) else { return };
+        let (title, kind) = (item.title.clone(), item.kind);
+        let list = &self.config.favorites;
+        let Some(i) = list.iter().position(|f| f.eq_ignore_ascii_case(&title)) else { return };
+        // Skip past favorites whose app is gone, so every press visibly moves the row.
+        let shown = |j: &usize| self.items.iter().any(|it| it.title.eq_ignore_ascii_case(&list[*j]));
+        let Some(j) = (if up { (0..i).rev().find(shown) } else { (i + 1..list.len()).find(shown) }) else { return };
+        let moved = self.config.favorites.remove(i);
+        self.config.favorites.insert(j, moved);
+        self.favorites_changed(&title, kind);
+    }
+
+    /// Saves the favorites, lists them again, and keeps the row titled `title` selected.
+    fn favorites_changed(&mut self, title: &str, kind: Kind) {
+        if self.me.is_some() {
+            config::save(&self.config);
+        }
+        // So Settings' next save keeps them.
+        if let Some(settings) = &self.settings {
+            let favorites = self.config.favorites.clone();
+            settings.update(move |s, _| s.config.favorites = favorites);
+        }
+        self.relist();
+        self.picked = self.results.iter().position(|it| it.title == title && it.kind == kind).unwrap_or(0);
     }
 
     fn app_icon(&self, name: &str) -> Option<PathBuf> {
@@ -325,6 +369,7 @@ fn run_picked(s: &mut State, tx: &mut Tx) {
 fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     let n = s.results.len();
     match ev.key {
+        Key::Up | Key::Down if ev.mods.cmd && ev.mods.alt => s.move_favorite(ev.key == Key::Up),
         Key::Down if n > 0 => s.picked = (s.picked + 1) % n,
         Key::Up if n > 0 => s.picked = (s.picked + n - 1) % n,
         Key::Escape if !s.query.text.is_empty() => {
@@ -341,6 +386,7 @@ fn on_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
             tx.close_window();
             return true;
         }
+        _ if ev.is_command('f') && ev.mods.shift => s.toggle_favorite(),
         _ if ev.is_command(',') => {
             s.open_settings(tx);
             return true;
@@ -385,10 +431,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let compact = s.mode == Mode::Clipboard;
     let mut list = col().key("results").w_full().h_full().padding(8.0).scroll(ScrollSpec { stick_bottom: false });
     for (i, item) in s.results.iter().enumerate() {
-        // AI Usage groups its rows under each provider's name.
-        if s.mode == Mode::AiUsage && let Some(provider) = section(s, i) {
+        if let Some(heading) = section(s, i) {
             list = list.child(row().px(10.0).pt(if i == 0 { 4.0 } else { 14.0 }).pb(6.0)
-                .child(text(provider).font(type_::SECTION).color(t.text_secondary)));
+                .child(text(heading).font(type_::SECTION).color(t.text_secondary)));
         }
         let icon = item.icon.as_ref().and_then(|p| s.icon_handles.get(p)).filter(|img| img.error().is_none())
             .or_else(|| provider(s, item).and_then(|p| s.ai_logos.iter().find(|(name, _)| *name == p)).map(|(_, img)| img));
@@ -440,10 +485,25 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(footer)
 }
 
-/// The provider whose group starts at row `i` of AI Usage, if one does.
+/// The heading above row `i`, if a group starts there: Favorites and Suggestions in an empty
+/// root list once there are favorites, and each provider's name in AI Usage.
 fn section(s: &State, i: usize) -> Option<&'static str> {
-    let here = provider(s, &s.results[i])?;
-    (i == 0 || provider(s, &s.results[i - 1]) != Some(here)).then_some(here)
+    match s.mode {
+        Mode::Root if s.query.text.trim().is_empty() && !s.config.favorites.is_empty() => {
+            let favorite = |i: usize| s.config.is_favorite(&s.results[i].title);
+            match (i, favorite(i)) {
+                (0, true) => Some("Favorites"),
+                (0, false) => Some("Suggestions"),
+                (_, false) if favorite(i - 1) => Some("Suggestions"),
+                _ => None,
+            }
+        }
+        Mode::AiUsage => {
+            let here = provider(s, &s.results[i])?;
+            (i == 0 || provider(s, &s.results[i - 1]) != Some(here)).then_some(here)
+        }
+        _ => None,
+    }
 }
 
 /// The provider an AI Usage row belongs to, by the usage page it opens.
@@ -569,6 +629,11 @@ fn installed(s: &mut State) {
 
 const SCENES: &[(&str, fn(&mut State))] = &[
     ("empty", |s| scene(s, Mode::Root, "")),
+    ("favorites", |s| {
+        scene(s, Mode::Root, "");
+        s.config.favorites = vec!["Visual Studio Code".into(), "Slack".into(), "Clipboard History".into()];
+        s.relist();
+    }),
     ("apps", |s| scene(s, Mode::Root, "vsc")),
     ("calc", |s| scene(s, Mode::Root, "(1200+340)*1.12")),
     ("commands", |s| scene(s, Mode::Root, "dark")),
@@ -686,5 +751,51 @@ mod tests {
         s.query.replace_text("ai usag");
         s.refresh();
         assert_eq!(s.picked, 0);
+    }
+
+    #[test]
+    fn command_option_arrows_reorder_favorites() {
+        let mut s = State::new(config::example(), demo_items(), demo_history());
+        s.config.favorites = vec!["Slack".into(), "Gone".into(), "Arc".into(), "Notes".into()];
+        s.refresh();
+        let titles = |s: &State| s.results[..3].iter().map(|it| it.title.clone()).collect::<Vec<_>>();
+        assert_eq!(titles(&s), ["Slack", "Arc", "Notes"]);
+        // Arc moves up past the missing app in one press, and stays selected.
+        s.picked = 1;
+        s.move_favorite(true);
+        assert_eq!((titles(&s), s.picked), (vec!["Arc".into(), "Slack".into(), "Notes".into()], 0));
+        // The first can't go higher, the last can't go lower.
+        s.move_favorite(true);
+        assert_eq!(s.config.favorites[0], "Arc");
+        s.picked = 2;
+        s.move_favorite(false);
+        assert_eq!(titles(&s), ["Arc", "Slack", "Notes"]);
+        s.move_favorite(true);
+        assert_eq!((titles(&s), s.picked), (vec!["Arc".into(), "Notes".into(), "Slack".into()], 1));
+        // A suggestion isn't a favorite, so it stays put.
+        s.picked = 3;
+        s.move_favorite(true);
+        assert_eq!(titles(&s), ["Arc", "Notes", "Slack"]);
+    }
+
+    #[test]
+    fn command_shift_f_favorites_the_picked_row() {
+        let mut s = State::new(config::example(), demo_items(), demo_history());
+        s.query.replace_text("slack");
+        s.refresh();
+        s.toggle_favorite();
+        s.query.replace_text("");
+        s.refresh();
+        assert_eq!((s.results[0].title.as_str(), section(&s, 0)), ("Slack", Some("Favorites")));
+        assert_eq!(section(&s, 1), Some("Suggestions"));
+        // Taking it off again, from the empty list, keeps it selected and drops the headings.
+        s.toggle_favorite();
+        assert_eq!(s.results[s.picked].title, "Slack");
+        assert!(s.config.favorites.is_empty() && section(&s, 0).is_none());
+        // An answer doesn't last, so it can't be a favorite.
+        s.query.replace_text("2+2");
+        s.refresh();
+        s.toggle_favorite();
+        assert!(s.config.favorites.is_empty());
     }
 }
