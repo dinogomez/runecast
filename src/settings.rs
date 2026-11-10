@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use rune::{AppHandle, Cx, Image, ImageCache, Waker, El, ScrollSpec, Shortcut, ShortcutError, TextEdit, TextStyle, Tx, col, el, row, spacer, text};
+use rune::{AppHandle, Cx, Image, ImageCache, Latest, Waker, El, ScrollSpec, Shortcut, ShortcutError, TextEdit, TextStyle, Tx, col, el, row, spacer, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit, SegmentedControl, Select, ShortcutRecorder, ShortcutRecorderState, Switch, TextArea, TextInput};
 
 use crate::State;
@@ -11,6 +11,7 @@ use crate::catalog::{self, Action, Item, Kind};
 use crate::config::{self, Appearance, CLIPBOARD_SIZES, Config, ENGINES, Favorite, Quicklink, Snippet};
 use crate::hotkeys::{Hotkey, Registry};
 use crate::login;
+use crate::update::{self, Release};
 
 pub const SIZE: (f32, f32) = (760.0, 540.0);
 /// The band the window drags by. On macOS the traffic lights sit in it, over the sidebar.
@@ -75,6 +76,9 @@ pub struct Settings {
     logo: Option<(ImageCache, Image)>,
     /// None in headless scenes, which then never touch the disk.
     launcher: Option<AppHandle<State>>,
+    /// Check for Updates: the check in flight, made in `setup`, and what the last one found.
+    update_check: Option<Latest<Result<Option<Release>, String>>>,
+    update: Option<Result<Option<Release>, String>>,
 }
 
 impl Settings {
@@ -82,7 +86,7 @@ impl Settings {
         let mut s = Settings {
             tab: Tab::General, config, recorders: Vec::new(), open_select: None, login: false, cleared: false,
             snippet: 0, link: 0, alias: 0, known: Vec::new(), name: TextEdit::new(""), body: TextEdit::new(""), keyword: TextEdit::new(""),
-            url: TextEdit::new(""), registry, logo: None, launcher,
+            url: TextEdit::new(""), registry, logo: None, launcher, update_check: None, update: None,
         };
         s.refresh();
         s
@@ -112,6 +116,16 @@ impl Settings {
             self.known = catalog::load(&self.config);
         }
         self.load_fields();
+    }
+
+    /// Check for Updates, or once a newer release turned up, install it.
+    fn update_pressed(&mut self) {
+        let Some(launcher) = &self.launcher else { return };
+        if let Some(Ok(Some(_))) = self.update {
+            launcher.update(|s, _| s.install_update());
+        } else if let Some(check) = &self.update_check {
+            check.request((), |()| update::latest());
+        }
     }
 
     /// Saves and tells the launcher.
@@ -394,6 +408,20 @@ fn general(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> El {
         .disabled(s.cleared).on_press(|s: &mut Settings| s.clear_history()).build(k);
     let file = Button::new("Open config.json").variant(ButtonVariant::Outline)
         .on_press(|_: &mut Settings| catalog::spawn(&Action::OpenPath(config::path()))).build(k);
+    let checking = s.update_check.as_ref().is_some_and(Latest::is_pending);
+    let (label, detail) = match &s.update {
+        _ if checking => ("Checking…".to_string(), "Asking GitHub for the latest release.".to_string()),
+        Some(Ok(Some(r))) => (format!("Update to v{}", r.version), format!("v{} is out. Runecast relaunches once it's installed.", r.version)),
+        Some(Ok(None)) => ("Check for Updates".into(), "You're on the latest version.".into()),
+        Some(Err(e)) => ("Check for Updates".into(), format!("Couldn't check: {e}.")),
+        None => ("Check for Updates".into(), "Checked daily; new versions show up in the menu bar.".into()),
+    };
+    let available = matches!(s.update, Some(Ok(Some(_))));
+    let check = Button::new(&label).variant(if available { ButtonVariant::Submit } else { ButtonVariant::Outline })
+        .disabled(checking).on_press(|s: &mut Settings| s.update_pressed()).build(k);
+    let version = row().gap(14.0).center_y()
+        .child(text(concat!("v", env!("CARGO_PKG_VERSION"))).font(k.ty.ui).color(k.c.text_muted))
+        .child(check);
     let engine_detail = format!("The last row searches {} for what you typed.", s.config.engine().0);
     col()
         .child(section(k, "Look and feel"))
@@ -410,6 +438,8 @@ fn general(s: &Settings, k: &Kit, layer: &mut Vec<El>) -> El {
         .child(setting(k, "Clear history", "Forget everything copied so far.", clear))
         .child(section(k, "Advanced"))
         .child(setting(k, "Config file", "Every setting, as JSON, for editing by hand.", file))
+        .child(section(k, "About"))
+        .child(setting(k, "Version", &detail, version))
 }
 
 fn hotkeys(s: &Settings, k: &Kit) -> El {
@@ -582,12 +612,24 @@ fn url_edit(s: &mut Settings) -> &mut TextEdit {
 }
 
 pub fn setup(s: &mut Settings, waker: Waker) {
-    let cache = ImageCache::new(waker);
+    let cache = ImageCache::new(waker.clone());
     let logo = cache.load(crate::LOGO);
     if rune::is_headless() {
         let _ = logo.wait();
     }
     s.logo = Some((cache, logo));
+    s.update_check = Some(Latest::new(waker));
+}
+
+/// A Check for Updates landed: show it, and offer a newer release in the menu bar too.
+pub fn poll(s: &mut Settings, _: f64, _: &mut Tx) -> bool {
+    let Some(found) = s.update_check.as_ref().and_then(Latest::take) else { return false };
+    if let (Ok(Some(release)), Some(launcher)) = (&found, &s.launcher) {
+        let release = release.clone();
+        launcher.update(move |s, _| s.offer_update(release));
+    }
+    s.update = Some(found);
+    true
 }
 
 pub const SCENES: &[(&str, fn(&mut Settings))] = &[

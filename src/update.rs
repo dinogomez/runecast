@@ -50,11 +50,12 @@ pub fn check_in_background(on_release: impl FnOnce(Release) + Send + 'static) {
     });
 }
 
-fn latest() -> Result<Option<Release>, String> {
+/// The latest release, if it's newer than this build. Blocks; call it off the UI thread.
+pub fn latest() -> Result<Option<Release>, String> {
     let out = Command::new("curl").args(["-sf", "--max-time", "10", "-H", "Accept: application/vnd.github+json", LATEST_URL])
         .output().map_err(|e| e.to_string())?;
     if !out.status.success() {
-        return Err(format!("GitHub didn't answer ({})", out.status));
+        return Err("GitHub didn't answer".into());
     }
     from_reply(&out.stdout, env!("CARGO_PKG_VERSION"))
 }
