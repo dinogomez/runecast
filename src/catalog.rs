@@ -194,7 +194,7 @@ fn quit_rows(items: &[Item], query: &str) -> Vec<Item> {
 }
 
 /// What's typed after `keyword` and a space, when the query starts with them (ignoring case).
-fn argument<'q>(query: &'q str, keyword: &str) -> Option<&'q str> {
+pub fn argument<'q>(query: &'q str, keyword: &str) -> Option<&'q str> {
     let head = query.get(..keyword.len())?;
     let rest = query[keyword.len()..].strip_prefix(' ')?.trim();
     (head.eq_ignore_ascii_case(keyword) && !rest.is_empty()).then_some(rest)
