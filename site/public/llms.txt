@@ -1,0 +1,33 @@
+# Runecast
+
+> Runecast is a fast, free and open-source (MIT) keyboard launcher for macOS and Linux, inspired by Raycast and built in Rust with Rune. Press Option+Space (Alt+Space on Linux), type a few letters, and hit Return.
+
+Features:
+
+- Fuzzy app search, ranked by what you use most, plus favorites
+- File search
+- Clipboard history (Control+Option+V)
+- Window management on macOS: halves, maximize, center (Control+Option+arrow keys)
+- Snippets, quicklinks and aliases for any app or command
+- Calculator and conversions: math, units, currency and time zones (for example `100 usd to php`, `3pm pst in manila`)
+- System commands such as dark mode, volume and quitting apps
+- World clock, and Claude and ChatGPT plan usage from the Claude Code and Codex sign-in
+- Falls back to a web search for anything else
+
+Settings are saved to `config.json` in `~/Library/Application Support/Runecast/` on macOS and `~/.config/runecast/` on Linux. Runecast checks for new releases daily and updates itself on macOS.
+
+## Download
+
+- [Latest macOS DMG](https://github.com/dinogomez/runecast/releases/latest/download/Runecast-latest-macos.dmg): universal build for Apple silicon and Intel
+- [All releases](https://github.com/dinogomez/runecast/releases): macOS `.dmg` and `.zip`, Linux x86_64 `.tar.gz`, with first-launch steps in the release notes
+
+## Docs
+
+- [README](https://github.com/dinogomez/runecast/blob/main/README.md): features, shortcuts, install and configuration
+- [Contributing](https://github.com/dinogomez/runecast/blob/main/CONTRIBUTING.md): building from source, tests and code layout
+
+## Optional
+
+- [Source code](https://github.com/dinogomez/runecast)
+- [License (MIT)](https://github.com/dinogomez/runecast/blob/main/LICENSE)
+- [Rune](https://github.com/anomalyco/rune): the Rust UI framework Runecast is built with
