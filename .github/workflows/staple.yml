@@ -1,17 +1,24 @@
 name: Staple
 
-# Finishes releases that Release published before Apple finished notarizing them. Every 30 minutes
-# it asks Apple about each release whose notes still say notarization is pending. Once Apple
-# accepts a build, it staples the ticket to Runecast.app, replaces the release's zip and DMG, and
-# updates the notes. A rejected build fails this workflow and says so in the release notes.
+# Finishes releases that Release published before Apple finished notarizing them. It asks Apple
+# about each release whose notes still say notarization is pending. Once Apple accepts a build, it
+# staples the ticket to Runecast.app, replaces the release's zip and DMG, and updates the notes. A
+# rejected build fails this workflow and says so in the release notes.
 #
-# GitHub turns scheduled workflows off after 60 days without commits; turn it back on in the
-# Actions tab, or run it from there by hand.
+# Release starts it right after publishing. While a build is still pending, a started run starts
+# itself again 5 minutes later, up to 24 times (about 2.5 hours). The schedule is only a backstop:
+# GitHub runs scheduled workflows late or skips them when it's busy, and turns them off after 60
+# days without commits; turn it back on in the Actions tab, or run it from there by hand.
 
 on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      attempt:
+        description: "How many times this has started itself again; leave at 0"
+        type: number
+        default: 0
 
 permissions:
   contents: write
@@ -94,3 +101,25 @@ jobs:
       - name: Forget the key
         if: always()
         run: rm -f "$RUNNER_TEMP/key.p8"
+
+  again:
+    needs: [pending, staple]
+    if: always() && github.event_name == 'workflow_dispatch' && needs.pending.outputs.releases != '[]' && inputs.attempt < 24
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Check again in 5 minutes if Apple is still working
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ATTEMPT: ${{ inputs.attempt }}
+        run: |
+          waiting=$(gh release list --limit 20 --json tagName --jq '.[].tagName' | while read -r tag; do
+            gh release view "$tag" --json body --jq .body | grep -q 'notarization:pending:' && echo "$tag" || true
+          done)
+          if [ -z "$waiting" ]; then echo "Nothing left waiting on Apple."; exit 0; fi
+          echo "Still waiting on Apple:" $waiting
+          sleep 300
+          gh workflow run staple.yml --ref "$GITHUB_REF_NAME" -f attempt=$((ATTEMPT + 1))

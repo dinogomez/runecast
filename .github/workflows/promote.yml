@@ -57,6 +57,9 @@ jobs:
 
   release:
     needs: tag
+    permissions:
+      contents: write
+      actions: write # Release starts Staple
     uses: ./.github/workflows/release.yml
     with:
       tag: ${{ needs.tag.outputs.tag }}
