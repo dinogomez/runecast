@@ -55,6 +55,8 @@ Download the `.dmg` (macOS) or `.tar.gz` (Linux) from [Releases](https://github.
 
 On macOS, grant Runecast **Accessibility** permission (System Settings → Privacy & Security) so it can paste and move windows.
 
+Runecast checks for new releases daily. When one is out, the menu bar icon's menu offers it at the top: on macOS it installs the update and relaunches; on Linux it opens the release page.
+
 ## Shortcuts
 
 | Shortcut | Action |

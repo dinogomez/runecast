@@ -21,6 +21,7 @@ mod icons;
 mod login;
 mod menubar;
 mod settings;
+mod update;
 mod usage;
 mod wm;
 
@@ -87,6 +88,8 @@ struct State {
     me: Option<AppHandle<State>>,
     registry: Option<Arc<Mutex<Registry>>>,
     settings: Option<AppHandle<Settings>>,
+    /// A newer release, offered in the menu bar until it's picked.
+    update: Option<update::Release>,
 }
 
 impl State {
@@ -97,7 +100,7 @@ impl State {
             mode: Mode::Root, query, config, items, history, usage: Usage::default(), rates: convert::Rates::default(), files: Vec::new(), file_search: None,
             ai: ai::Readings::default(), ai_fetch: None, ai_logos: Vec::new(),
             results: Vec::new(), picked: 0,
-            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None,
+            icons: None, logo: None, icon_handles: HashMap::new(), watching: false, me: None, registry: None, settings: None, update: None,
         };
         s.refresh();
         s
@@ -717,7 +720,12 @@ fn main() {
                 if let Err(e) = menubar::install(me.clone()) {
                     eprintln!("runecast: no menu bar icon: {e}");
                 }
-                convert::refresh_in_background(s.rates.is_stale(usage::now()), move |rates| me.update(move |s, _| s.rates = rates));
+                let rates = me.clone();
+                convert::refresh_in_background(s.rates.is_stale(usage::now()), move |r| rates.update(move |s, _| s.rates = r));
+                update::check_in_background(move |release| me.update(move |s, _| {
+                    menubar::offer_update(&release.label());
+                    s.update = Some(release);
+                }));
             }
         });
         let launcher_handle = launcher.handle();
