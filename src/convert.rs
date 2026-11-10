@@ -220,24 +220,50 @@ fn currency(q: &str, rates: &Rates) -> Option<Answer> {
 // ------------------------------------------------------------------------------------------
 // Time zones
 
-/// A zone by abbreviation (fixed offsets: PST is always UTC−8), city, country or IANA name.
+/// A zone by abbreviation (fixed offsets: PST is always UTC−8), UTC offset ("utc+5", "gmt-3:30"),
+/// city, country or IANA name. Any city with its own IANA zone works ("tashkent", "buenos aires").
 fn zone(name: &str) -> Option<(TimeZone, String)> {
     let name = name.trim();
     let fixed = |hours: f64| {
         let offset = Offset::from_seconds((hours * 3600.0) as i32).ok()?;
         Some((TimeZone::fixed(offset), name.to_uppercase()))
     };
+    // Where an abbreviation means several zones, the one people most likely mean: IST is India,
+    // CST and AST are North American, BST is British, AMT is Armenia.
     let hours = match name {
-        "utc" | "gmt" | "z" => Some(0.0),
-        "pst" => Some(-8.0), "pdt" => Some(-7.0), "mst" => Some(-7.0), "mdt" => Some(-6.0),
-        "cst" => Some(-6.0), "cdt" => Some(-5.0), "est" => Some(-5.0), "edt" => Some(-4.0),
-        "bst" => Some(1.0), "cet" => Some(1.0), "cest" => Some(2.0), "ist" => Some(5.5),
-        "pht" | "phst" | "sgt" | "hkt" | "awst" => Some(8.0), "jst" | "kst" => Some(9.0),
-        "aest" => Some(10.0), "aedt" => Some(11.0), "nzst" => Some(12.0), "nzdt" => Some(13.0),
+        "utc" | "gmt" | "z" | "ut" | "wet" | "azost" | "egst" => Some(0.0),
+        "lint" => Some(14.0), "tot" | "nzdt" | "phot" | "tkt" => Some(13.0), "chast" => Some(12.75),
+        "nzst" | "fjt" | "mht" | "tvt" | "gilt" | "pett" | "anat" | "wakt" | "nrt" => Some(12.0),
+        "sbt" | "nct" | "magt" | "vut" | "sakt" | "srett" | "nft" | "kost" | "pont" => Some(11.0),
+        "lhdt" | "aedt" => Some(11.0), "acdt" | "lhst" => Some(10.5),
+        "aest" | "chst" | "vlat" | "pgt" | "chut" => Some(10.0), "acst" => Some(9.5),
+        "jst" | "kst" | "wit" | "yakt" | "tlt" | "pwt" => Some(9.0), "acwst" => Some(8.75),
+        "pht" | "phst" | "sgt" | "hkt" | "awst" | "wita" | "myt" | "ulat" | "irkt" | "bnt" => Some(8.0),
+        "ict" | "wib" | "novt" | "krat" | "hovt" | "cxt" | "davt" => Some(7.0),
+        "mmt" | "cct" => Some(6.5), "btt" | "kgt" | "omst" | "iot" | "vost" => Some(6.0),
+        "npt" => Some(5.75), "ist" | "slst" => Some(5.5),
+        "pkt" | "uzt" | "tjt" | "tmt" | "yekt" | "mvt" | "almt" | "aqtt" | "orat" | "tft" | "mawt" => Some(5.0),
+        "aft" | "irdt" => Some(4.5),
+        "gst" | "azt" | "get" | "amt" | "mut" | "ret" | "sct" | "samt" => Some(4.0), "irst" => Some(3.5),
+        "msk" | "trt" | "eat" | "eest" | "idt" | "fet" | "syot" => Some(3.0),
+        "eet" | "cest" | "mest" | "cat" | "sast" => Some(2.0),
+        "cet" | "met" | "bst" | "west" | "wat" => Some(1.0),
+        "azot" | "cvt" | "egt" => Some(-1.0), "fnt" | "brst" | "pmdt" | "uyst" | "wgt" => Some(-2.0),
+        "ndt" => Some(-2.5),
+        "art" | "brt" | "adt" | "clst" | "pyst" | "uyt" | "gft" | "srt" | "fkst" | "pmst" | "rott" => Some(-3.0),
+        "nst" => Some(-3.5),
+        "ast" | "edt" | "clt" | "vet" | "bot" | "pyt" | "gyt" | "fkt" => Some(-4.0),
+        "est" | "cdt" | "cot" | "pet" | "ect" | "acrt" | "easst" => Some(-5.0),
+        "cst" | "mdt" | "galt" | "east" => Some(-6.0),
+        "mst" | "pdt" => Some(-7.0), "pst" | "akdt" => Some(-8.0), "akst" | "hdt" | "gamt" => Some(-9.0),
+        "mart" => Some(-9.5), "hst" | "hast" | "ckt" | "taht" => Some(-10.0), "sst" | "nut" => Some(-11.0),
         _ => None,
     };
     if let Some(h) = hours {
         return fixed(h);
+    }
+    if let Some(found) = utc_offset(name) {
+        return Some(found);
     }
     let iana = match name {
         "pt" | "pacific" | "los angeles" | "la" | "san francisco" | "sf" | "seattle" | "vancouver" => "America/Los_Angeles",
@@ -268,10 +294,53 @@ fn zone(name: &str) -> Option<(TimeZone, String)> {
     if !iana.is_empty() {
         return Some((TimeZone::get(iana).ok()?, label(name)));
     }
+    if let Some((city, iana)) = cities().iter().find(|(city, _)| city.eq_ignore_ascii_case(name)) {
+        return Some((TimeZone::get(iana).ok()?, city.clone()));
+    }
     // An IANA name typed as such: "asia/manila", "america/new_york".
     let typed: String = name.split('/').map(|part| part.split('_').map(|w| w.get(..1).map_or(String::new(), |c| c.to_uppercase()) + w.get(1..).unwrap_or(""))
         .collect::<Vec<_>>().join("_")).collect::<Vec<_>>().join("/");
     name.contains('/').then(|| TimeZone::get(&typed).ok().map(|tz| (tz, typed.clone()))).flatten()
+}
+
+/// "utc+5", "gmt-3:30", "utc+0545", "+8" as a fixed zone labelled like "UTC+5:30".
+fn utc_offset(name: &str) -> Option<(TimeZone, String)> {
+    let rest = name.strip_prefix("utc").or_else(|| name.strip_prefix("gmt")).unwrap_or(name).trim();
+    let sign = match rest.chars().next()? {
+        '+' => 1,
+        '-' | '−' => -1,
+        _ => return None,
+    };
+    let digits = rest[rest.chars().next()?.len_utf8()..].trim();
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit() || c == ':') {
+        return None;
+    }
+    let (h, m) = match digits.split_once(':') {
+        Some((h, m)) => (h, m),
+        None if digits.len() > 2 => digits.split_at(digits.len() - 2),
+        None => (digits, "0"),
+    };
+    let (h, m): (i32, i32) = (h.parse().ok()?, m.parse().ok()?);
+    if h > 14 || m >= 60 || (h == 14 && m > 0) {
+        return None;
+    }
+    let offset = Offset::from_seconds(sign * (h * 3600 + m * 60)).ok()?;
+    let label = format!("UTC{}{h}{}", if sign > 0 { '+' } else { '−' }, if m > 0 { format!(":{m:02}") } else { String::new() });
+    Some((TimeZone::fixed(offset), label))
+}
+
+/// Every city in the time zone database with its IANA name, such as ("Buenos Aires",
+/// "America/Argentina/Buenos_Aires"), read once. Fixed "Etc/GMT+5"-style zones are left out:
+/// their signs run backwards, and `utc_offset` reads offsets anyway.
+fn cities() -> &'static [(String, String)] {
+    static CITIES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    CITIES.get_or_init(|| {
+        jiff::tz::db().available().map(|n| n.as_str().to_string())
+            .filter(|n| n.contains('/') && !n.chars().any(|c| c.is_ascii_digit()) && !n.starts_with("Etc/")
+                && !n.starts_with("posix/") && !n.starts_with("right/"))
+            .map(|n| (n.rsplit('/').next().unwrap_or(&n).replace('_', " "), n))
+            .collect()
+    })
 }
 
 /// "3pm", "3:30 pm", "15:00", "noon", "midnight" as hour and minute.
@@ -382,5 +451,25 @@ mod tests {
         assert_eq!(title("8pm new york to manila").as_deref(), Some("9:00 AM (next day)"));
         assert_eq!(title("25:00 in tokyo"), None);
         assert_eq!(title("time in atlantis"), None);
+    }
+
+    #[test]
+    fn any_offset_abbreviation_or_database_city_is_a_zone() {
+        // 2:45 PM in Manila is 06:45 UTC.
+        assert_eq!(title("2:45pm to utc+5").as_deref(), Some("11:45 AM"));
+        assert_eq!(title("2:45PM to UZT").as_deref(), Some("11:45 AM"));
+        assert_eq!(title("2:45pm to tashkent").as_deref(), Some("11:45 AM"));
+        assert_eq!(title("2:45pm to gmt-3").as_deref(), Some("3:45 AM"));
+        assert_eq!(title("2:45pm to npt").as_deref(), Some("12:30 PM"));
+        assert_eq!(title("noon egst to utc").as_deref(), Some("12:00 PM"));
+        assert_eq!(title("noon wgt to utc").as_deref(), Some("2:00 PM"));
+        let answer = convert("2:45pm to utc+5:30", &Rates::demo(), &now()).unwrap();
+        assert_eq!((answer.title.as_str(), answer.subtitle.as_str()), ("12:15 PM", "2:45 PM here in UTC+5:30 · Mon 9 Nov"));
+        // An offset on the time's side too; 9:00 at +5:45 is 03:15 UTC.
+        assert_eq!(title("9am utc+0545 to manila").as_deref(), Some("11:15 AM"));
+        // A multi-word city from the database, behind DST-free Argentina.
+        assert_eq!(title("noon to buenos aires").as_deref(), Some("1:00 AM"));
+        assert_eq!(title("2:45pm to utc+15"), None);
+        assert_eq!(title("2:45pm to utc+5x"), None);
     }
 }
