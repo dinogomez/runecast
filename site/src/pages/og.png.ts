@@ -12,7 +12,17 @@ const h = (type: string, style: Record<string, unknown>, children?: unknown, pro
   props: { style, children, ...props },
 });
 
-const key = (label: string) =>
+// Inter has no ⌥ glyph, so the Option key draws it as a path.
+const option = h("svg", { width: 38, height: 38 }, h("path", {}, undefined, {
+  d: "M2 6h7l7 12h6M14 6h8",
+  fill: "none",
+  stroke: "#ededed",
+  strokeWidth: 2.2,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+}), { viewBox: "0 0 24 24" });
+
+const key = (label: unknown) =>
   h(
     "div",
     {
@@ -66,7 +76,7 @@ export const GET: APIRoute = async () => {
           "A fast, open-source launcher for macOS and Linux",
         ),
         h("div", { display: "flex", alignItems: "center", gap: 12, marginTop: 44 }, [
-          key("Option"),
+          key(option),
           key("Space"),
         ]),
       ],

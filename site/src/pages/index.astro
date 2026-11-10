@@ -11,7 +11,7 @@ const title = "Runecast | Fast, open-source launcher for macOS and Linux";
 const favicon = await getImage({ src: icon, width: 64, format: "png" });
 const touchIcon = await getImage({ src: icon, width: 180, format: "png" });
 const url = new URL(Astro.url.pathname, Astro.site).href;
-const ogImage = new URL("/og.png", Astro.site).href;
+const ogImage = new URL("/og.png?v=2", Astro.site).href;
 const ogAlt = "Runecast: a fast, open-source launcher for macOS and Linux";
 const jsonLd = {
   "@context": "https://schema.org",
