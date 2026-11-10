@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::config::{Alias, Config};
+use crate::config::{Alias, Config, Favorite};
 use crate::convert::{self, Rates};
 use crate::hotkeys::Hotkey;
 use crate::wm::Layout;
@@ -110,6 +110,8 @@ pub struct Ctx<'a> {
     pub files: &'a [Item],
     pub rates: &'a Rates,
     pub aliases: &'a [Alias],
+    /// What an empty query lists first, in this order.
+    pub favorites: &'a [Favorite],
     pub now: &'a jiff::Zoned,
 }
 
@@ -118,15 +120,17 @@ const ALIAS_EXACT: i32 = 1000;
 const ALIAS_PREFIX: i32 = 400;
 
 /// The rows for `query`: a calculator or conversion answer first, then the best matches (by alias,
-/// title and use), then file matches, then a web search. An empty query lists the most used items
-/// first so the panel never opens blank.
+/// title and use), then file matches, then a web search. An empty query lists the favorites, then
+/// the most used items, so the panel never opens blank.
 pub fn search(items: &[Item], query: &str, ctx: &Ctx) -> Vec<Item> {
     let query = query.trim();
     let boost = ctx.boost;
     if query.is_empty() {
-        let mut all: Vec<(i32, &Item)> = items.iter().map(|it| (boost(it), it)).collect();
-        all.sort_by_key(|(b, _)| -b);
-        return all.into_iter().take(MAX_RESULTS).map(|(_, it)| it.clone()).collect();
+        let favorite = |it: &Item| ctx.favorites.iter().any(|f| f.is(it));
+        let favorites = ctx.favorites.iter().filter_map(|f| items.iter().find(|it| f.is(it)));
+        let mut rest: Vec<(i32, &Item)> = items.iter().filter(|it| !favorite(it)).map(|it| (boost(it), it)).collect();
+        rest.sort_by_key(|(b, _)| -b);
+        return favorites.chain(rest.into_iter().map(|(_, it)| it)).take(MAX_RESULTS).cloned().collect();
     }
     let mut out = Vec::new();
     if let Some(v) = calc::eval(query) {
@@ -389,7 +393,7 @@ mod tests {
     }
 
     fn plain() -> Ctx<'static> {
-        Ctx { engine: crate::config::ENGINES[0], boost: &unused, files: &[], rates: &NO_RATES, aliases: &[], now: &NOW }
+        Ctx { engine: crate::config::ENGINES[0], boost: &unused, files: &[], rates: &NO_RATES, aliases: &[], favorites: &[], now: &NOW }
     }
 
     #[test]
@@ -442,6 +446,22 @@ mod tests {
         let rows = search(&items, "no", &Ctx { files: &files, ..plain() });
         let kinds: Vec<Kind> = rows.iter().map(|r| r.kind).collect();
         assert_eq!(kinds, [Kind::App, Kind::App, Kind::File, Kind::File, Kind::File, Kind::Web]);
+    }
+
+    #[test]
+    fn favorites_lead_an_empty_query_in_their_own_order() {
+        let mail = Item::new("Mail", "", Kind::Snippet, Action::Paste("hi@runecast.dev".into()));
+        let items = [app("Arc"), app("Mail"), app("Notes"), app("Slack"), mail.clone()];
+        let boosted = |it: &Item| if it.title == "Slack" { 60 } else { 0 };
+        // Not alphabetical and not by use: the order they were added in. Unknown titles are skipped,
+        // and the Mail snippet is the favorite, not the Mail app listed before it.
+        let favorites = [Favorite::of(&app("notes")), Favorite::of(&app("Gone")), Favorite::of(&mail), Favorite::of(&app("Arc"))];
+        let ctx = Ctx { boost: &boosted, favorites: &favorites, ..plain() };
+        let rows: Vec<(String, Kind)> = search(&items, " ", &ctx).into_iter().map(|it| (it.title, it.kind)).collect();
+        let row = |t: &str, k| (t.to_string(), k);
+        assert_eq!(rows, [row("Notes", Kind::App), row("Mail", Kind::Snippet), row("Arc", Kind::App), row("Slack", Kind::App), row("Mail", Kind::App)]);
+        // Typing ranks them like anything else.
+        assert_eq!(search(&items, "s", &ctx)[0].title, "Slack");
     }
 
     #[test]
