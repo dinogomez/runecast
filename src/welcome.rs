@@ -15,6 +15,9 @@ use crate::config::{self, Appearance};
 use crate::hotkeys::Hotkey;
 use crate::login;
 
+/// The argument a relaunch passes so the new copy opens the Welcome window.
+pub const REOPEN: &str = "--welcome";
+
 pub const SIZE: (f32, f32) = (520.0, 520.0);
 /// The band the window drags by; the traffic lights sit in it on macOS.
 pub const TITLEBAR: f32 = 40.0;
@@ -28,6 +31,9 @@ pub struct Welcome {
     trusted: bool,
     /// From opening until closing, poll checks each second whether Accessibility is allowed.
     watching: bool,
+    /// The switch was flipped while access was off: if it stays off, macOS may only let a fresh
+    /// process see the grant, so the window offers to relaunch.
+    asked: bool,
     login: bool,
     logo: Option<(ImageCache, Image)>,
     /// None in headless scenes, which then never touch the disk.
@@ -37,7 +43,7 @@ pub struct Welcome {
 
 impl Welcome {
     pub fn new(launcher: Option<AppHandle<State>>, me: Option<AppHandle<Welcome>>) -> Self {
-        let mut s = Welcome { keys: Vec::new(), macos: cfg!(target_os = "macos"), appearance: Appearance::System, trusted: false, watching: false, login: false, logo: None, launcher, me };
+        let mut s = Welcome { keys: Vec::new(), macos: cfg!(target_os = "macos"), appearance: Appearance::System, trusted: false, watching: false, asked: false, login: false, logo: None, launcher, me };
         s.reload();
         s
     }
@@ -65,6 +71,36 @@ impl Welcome {
         match login::set(!self.login) {
             Ok(()) => self.login = !self.login,
             Err(e) => eprintln!("runecast: couldn't change launch at login: {e}"),
+        }
+    }
+
+    fn ask(&mut self) {
+        self.asked |= !self.trusted;
+        accessibility::request();
+    }
+
+    /// Quits and starts Runecast again with the Welcome window open.
+    fn relaunch(&mut self) {
+        let Some(launcher) = &self.launcher else { return };
+        // The new copy waits for this one to quit, so it doesn't find the hotkey taken.
+        let wait = r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; shift; exec "$@""#;
+        let mut sh = std::process::Command::new("/bin/sh");
+        sh.args(["-c", wait, "sh", &std::process::id().to_string()]);
+        // Through Launch Services from the app bundle; a bare binary (`cargo run`) runs itself.
+        #[cfg(target_os = "macos")]
+        let app = crate::update::running_app();
+        #[cfg(not(target_os = "macos"))]
+        let app: Option<std::path::PathBuf> = None;
+        match app {
+            Some(app) => sh.arg("open").arg(app).args(["--args", REOPEN]),
+            None => {
+                let Ok(exe) = std::env::current_exe() else { return };
+                sh.arg(exe).arg(REOPEN)
+            }
+        };
+        match sh.spawn() {
+            Ok(_) => launcher.quit(),
+            Err(e) => eprintln!("runecast: couldn't relaunch: {e}"),
         }
     }
 
@@ -132,10 +168,20 @@ pub fn view(s: &Welcome, cx: &mut Cx<Welcome>) -> El {
     if s.macos {
         // Only System Settings can grant or take back the permission, so the switch opens it,
         // and follows what's set there.
-        let control = Switch::new(s.trusted).label("Allow Accessibility").hide_label()
-            .on_toggle(|_: &mut Welcome| accessibility::request()).build(&k);
+        let mut control = Switch::new(s.trusted).label("Allow Accessibility").hide_label()
+            .on_toggle(|s: &mut Welcome| s.ask()).build(&k);
         let why = "Lets Runecast paste snippets and clipboard history, and move windows.";
-        let detail = if s.trusted { why.to_string() } else { format!("{why} Turn Runecast on in the list that opens.") };
+        let detail = if s.trusted {
+            why.to_string()
+        } else if s.asked {
+            "Turned Runecast on and this is still off? macOS may only see it once Runecast restarts.".to_string()
+        } else {
+            format!("{why} Turn Runecast on in the list that opens.")
+        };
+        if s.asked && !s.trusted {
+            let relaunch = Button::new("Relaunch").variant(ButtonVariant::Outline).on_press(|s: &mut Welcome| s.relaunch()).build(&k);
+            control = row().gap(12.0).center_y().child(relaunch).child(control);
+        }
         steps = steps.child(divider(&k)).child(step(&k, "Allow Accessibility", &detail, control));
     }
     let login = Switch::new(s.login).label("Launch at login").hide_label().on_toggle(|s: &mut Welcome| s.toggle_login()).build(&k);
@@ -182,6 +228,10 @@ pub const SCENES: &[(&str, fn(&mut Welcome))] = &[
         *s = Welcome::new(None, None);
         (s.macos, s.trusted, s.keys) = (true, false, vec!["⌥".into(), "Space".into()]);
     }),
+    ("welcome-relaunch", |s| {
+        *s = Welcome::new(None, None);
+        (s.macos, s.trusted, s.asked, s.keys) = (true, false, true, vec!["⌥".into(), "Space".into()]);
+    }),
     ("welcome-allowed", |s| {
         *s = Welcome::new(None, None);
         (s.macos, s.trusted, s.keys) = (true, true, vec!["⌥".into(), "Space".into()]);
@@ -200,10 +250,48 @@ mod accessibility {
         fn AXIsProcessTrustedWithOptions(options: *const c_void) -> u8;
     }
 
+    type TapCallback = extern "C" fn(*mut c_void, u32, *mut c_void, *mut c_void) -> *mut c_void;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventTapCreate(tap: u32, place: u32, options: u32, events: u64, callback: TapCallback, info: *mut c_void) -> *mut c_void;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFMachPortInvalidate(port: *mut c_void);
+        fn CFRelease(cf: *const c_void);
+    }
+
     /// Whether Runecast may use Accessibility: post keystrokes and move other apps' windows.
     pub fn trusted() -> bool {
         // SAFETY: takes nothing, only reads the process's TCC state.
-        unsafe { AXIsProcessTrusted() != 0 }
+        let cached = unsafe { AXIsProcessTrusted() != 0 };
+        cached || can_tap_keys()
+    }
+
+    /// AXIsProcessTrusted keeps its first answer for the life of the process, so a grant made in
+    /// System Settings while Runecast runs would only show after a relaunch. macOS checks the
+    /// permission afresh for each new keyboard event tap, so being able to make one is the live
+    /// answer. The tap is torn down before it's ever put on a run loop.
+    fn can_tap_keys() -> bool {
+        extern "C" fn pass(_: *mut c_void, _: u32, event: *mut c_void, _: *mut c_void) -> *mut c_void {
+            event
+        }
+        const SESSION: u32 = 1; // kCGSessionEventTap
+        const HEAD: u32 = 0; // kCGHeadInsertEventTap
+        const ACTIVE: u32 = 0; // kCGEventTapOptionDefault: a filter, which needs Accessibility
+        const KEY_DOWN: u64 = 1 << 10; // kCGEventKeyDown
+        // SAFETY: `pass` matches CGEventTapCallBack; the port we own is invalidated and released.
+        unsafe {
+            let tap = CGEventTapCreate(SESSION, HEAD, ACTIVE, KEY_DOWN, pass, std::ptr::null_mut());
+            if tap.is_null() {
+                return false;
+            }
+            CFMachPortInvalidate(tap);
+            CFRelease(tap);
+            true
+        }
     }
 
     /// Opens the Accessibility list in System Settings, first adding Runecast to it (the list
